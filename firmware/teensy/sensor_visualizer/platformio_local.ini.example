@@ -1,0 +1,5 @@
+; Copy to platformio_local.ini in this folder (gitignored via repo root .gitignore)
+
+[env:teensy41]
+upload_port = COM7
+monitor_port = COM7

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Human Instrument Sensor Visualizer</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div class="app-viewport">
+    <div class="app-shell" id="appShell">
+      <div class="app-header">
+        <header class="topbar">
+          <h1>Human Instrument Sensor Visualizer</h1>
+          <div class="actions">
+            <label class="baud-label">
+              Baud
+              <select id="serialBaudSelect" aria-label="Serial baud rate">
+                <option value="115200" selected>115200 (Teensy)</option>
+                <option value="921600">921600 (XIAO)</option>
+              </select>
+            </label>
+            <button id="connectButton">Connect Serial</button>
+            <button id="disconnectButton" disabled>Disconnect</button>
+            <button id="demoButton">Demo Mode</button>
+          </div>
+        </header>
+        <section class="status-strip">
+          <div class="status-pill">
+            <span class="label">Serial</span>
+            <span id="serialStatus">Disconnected</span>
+          </div>
+          <div class="status-pill">
+            <span class="label">Browser</span>
+            <span id="browserStatus">Checking...</span>
+          </div>
+          <div class="status-pill">
+            <span class="label">Last line</span>
+            <span id="lastLineType">none</span>
+          </div>
+        </section>
+      </div>
+
+      <main class="content-grid">
+        <section class="panel stats-panel stats-compact">
+          <div class="stats-compact-head">
+            <h2>Live Stats</h2>
+            <pre id="rawLine" class="raw-line-compact">No serial data yet.</pre>
+          </div>
+          <div class="stats-inline">
+            <div class="stat-chip ax"><span>ax</span><strong id="axValue">0.000</strong></div>
+            <div class="stat-chip ay"><span>ay</span><strong id="ayValue">0.000</strong></div>
+            <div class="stat-chip az"><span>az</span><strong id="azValue">0.000</strong></div>
+            <div class="stat-chip"><span>|a|</span><strong id="accelMagValue">0.000</strong></div>
+            <div class="stat-chip gx"><span>gx</span><strong id="gxValue">0.000</strong></div>
+            <div class="stat-chip gy"><span>gy</span><strong id="gyValue">0.000</strong></div>
+            <div class="stat-chip gz"><span>gz</span><strong id="gzValue">0.000</strong></div>
+            <div class="stat-chip"><span>|ω|</span><strong id="gyroMagValue">0.000</strong></div>
+            <div class="stat-chip"><span>raw</span><strong id="piezoRawValue">0</strong></div>
+            <div class="stat-chip piezo"><span>env</span><strong id="piezoEnvValue">0.0</strong></div>
+            <div class="stat-chip piezo"><span>peak</span><strong id="piezoPeakValue">0.0</strong></div>
+            <div class="stat-chip"><span>hit</span><strong id="piezoHitValue">0</strong></div>
+            <div class="stat-chip mic"><span>mic</span><strong id="micRawValue">0</strong></div>
+            <div class="stat-chip mic"><span>mEnv</span><strong id="micEnvValue">0.0</strong></div>
+          </div>
+        </section>
+
+        <div class="visual-row">
+          <section class="panel viewer-panel">
+            <div class="panel-header panel-header-tight">
+              <h2>3D Preview</h2>
+              <p>3D=スケッチ軸（X右・Y奥・Z上）/ 辺=線形加速度 / 色=ピエゾ</p>
+            </div>
+            <div id="threeContainer" class="three-container"></div>
+            <div class="legend">
+              <span class="legend-gradient"></span>
+              <span>piezo low</span>
+              <span class="spacer"></span>
+              <span>piezo high</span>
+            </div>
+          </section>
+
+          <div class="graphs-stack">
+            <section class="panel graph-panel">
+              <div class="panel-header panel-header-tight">
+                <h2>Acceleration</h2>
+                <p>ax red / ay green / az blue</p>
+              </div>
+              <canvas id="motionCanvas" width="480" height="420"></canvas>
+            </section>
+
+            <section class="panel graph-panel">
+              <div class="panel-header panel-header-tight">
+                <h2>Mic</h2>
+                <p>MAX4466 env (violet)</p>
+              </div>
+              <canvas id="micCanvas" width="480" height="420"></canvas>
+            </section>
+
+            <section class="panel graph-panel">
+              <div class="panel-header panel-header-tight">
+                <h2>Piezo</h2>
+                <p>env cyan / peak orange · Pz threshold/ratio</p>
+              </div>
+              <canvas id="piezoCanvas" width="480" height="420"></canvas>
+            </section>
+          </div>
+        </div>
+
+        <section class="panel tuning-panel">
+          <div class="tuning-head">
+            <h2>Parameters</h2>
+            <div class="tuning-actions">
+              <button type="button" id="paramResetButton">Reset</button>
+              <button type="button" id="paramCopyButton">M4L JSON</button>
+            </div>
+          </div>
+          <div id="paramControls" class="param-strip"></div>
+          <details class="param-export-wrap">
+            <summary>M4L export</summary>
+            <pre id="paramExportJson" class="param-export" aria-label="M4L export JSON"></pre>
+          </details>
+        </section>
+      </main>
+    </div>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+  </html>

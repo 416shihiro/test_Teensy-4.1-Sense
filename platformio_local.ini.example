@@ -1,0 +1,5 @@
+; Teensy: copy firmware/teensy/sensor_visualizer/platformio_local.ini.example
+;       → platformio_local.ini in that folder (set COM7).
+;
+; Or pass port on every upload:
+;   pio run --project-dir firmware/teensy/sensor_visualizer -t upload --upload-port COM7
