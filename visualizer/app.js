@@ -1,5 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import {
   PARAM_COLORS,
   PARAM_GROUPS,
@@ -31,6 +34,7 @@ const LINEAR_SMOOTH_ALPHA = 0.58;
 const ROTATION_ATTENUATION_START = 0.04;
 const ROTATION_ATTENUATION_RANGE = 0.22;
 const BOX_MIN_HALF = 0.38;
+const CUBE_EDGE_LINE_WIDTH = 2;
 const BOX_EDGE_SCALE_LARGE = 3;
 const BOX_MAX_EXTRA_HALF = BOX_MIN_HALF * 2 * (BOX_EDGE_SCALE_LARGE - 1);
 
@@ -892,11 +896,12 @@ const threeContainer = document.querySelector("#threeContainer");
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(threeContainer.clientWidth, threeContainer.clientHeight);
+renderer.setClearColor(0x000000, 0);
 renderer.sortObjects = true;
 threeContainer.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x101722);
+scene.background = null;
 
 const camera = new THREE.PerspectiveCamera(
   45,
@@ -997,17 +1002,37 @@ const cubeMesh = new THREE.Mesh(
 cubeMesh.renderOrder = 0;
 cubeGroup.add(cubeMesh);
 
-const edgeLines = new THREE.LineSegments(
-  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.02, 1.02, 1.02)),
-  new THREE.LineBasicMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.45,
-    depthWrite: false,
-  }),
-);
+function setCubeEdgePositions(boxGeometry, lineGeometry) {
+  const edges = new THREE.EdgesGeometry(boxGeometry);
+  lineGeometry.setPositions(edges.attributes.position.array);
+  edges.dispose();
+}
+
+const edgeLineGeometry = new LineSegmentsGeometry();
+setCubeEdgePositions(new THREE.BoxGeometry(1.02, 1.02, 1.02), edgeLineGeometry);
+
+const edgeLineResolution = new THREE.Vector2();
+const edgeLineMaterial = new LineMaterial({
+  color: 0xffffff,
+  linewidth: CUBE_EDGE_LINE_WIDTH,
+  transparent: true,
+  opacity: 0.45,
+  depthWrite: false,
+});
+
+const edgeLines = new LineSegments2(edgeLineGeometry, edgeLineMaterial);
 edgeLines.renderOrder = 1;
 cubeGroup.add(edgeLines);
+
+function updateEdgeLineResolution() {
+  const pixelRatio = renderer.getPixelRatio();
+  edgeLineResolution.set(
+    threeContainer.clientWidth * pixelRatio,
+    threeContainer.clientHeight * pixelRatio,
+  );
+  edgeLineMaterial.resolution.copy(edgeLineResolution);
+}
+updateEdgeLineResolution();
 
 const glowMesh = new THREE.Mesh(
   new THREE.SphereGeometry(1.0, 32, 32),
@@ -1022,15 +1047,35 @@ const glowMesh = new THREE.Mesh(
 glowMesh.visible = false;
 cubeGroup.add(glowMesh);
 
+const THERMAL_COLOR_STOPS = [
+  { t: 0.0, r: 0.0, g: 0.0, b: 0.0 },
+  { t: 0.14, r: 0.29, g: 0.03, b: 0.03 },
+  { t: 0.28, r: 0.9, g: 0.08, b: 0.05 },
+  { t: 0.48, r: 1.0, g: 0.45, b: 0.0 },
+  { t: 0.68, r: 1.0, g: 0.92, b: 0.12 },
+  { t: 0.84, r: 1.0, g: 1.0, b: 1.0 },
+  { t: 1.0, r: 0.82, g: 0.93, b: 1.0 },
+];
+
 function piezoColor(normalized) {
   const t = clamp(normalized, 0, 1);
   const color = new THREE.Color();
-  if (t < 0.5) {
-    color.setRGB(0, t * 2, 1 - t * 2);
-  } else {
-    const local = (t - 0.5) * 2;
-    color.setRGB(local, 1 - local, 0);
+  for (let i = 0; i < THERMAL_COLOR_STOPS.length - 1; i += 1) {
+    const start = THERMAL_COLOR_STOPS[i];
+    const end = THERMAL_COLOR_STOPS[i + 1];
+    if (t < start.t || t > end.t) {
+      continue;
+    }
+    const local = (t - start.t) / (end.t - start.t || 1);
+    color.setRGB(
+      start.r + (end.r - start.r) * local,
+      start.g + (end.g - start.g) * local,
+      start.b + (end.b - start.b) * local,
+    );
+    return color;
   }
+  const last = THERMAL_COLOR_STOPS[THERMAL_COLOR_STOPS.length - 1];
+  color.setRGB(last.r, last.g, last.b);
   return color;
 }
 
@@ -1063,8 +1108,8 @@ function applyAsymmetricBox(half) {
   cubeMesh.geometry = new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
   cubeMesh.position.set(centerX, centerY, centerZ);
 
-  edgeLines.geometry.dispose();
-  edgeLines.geometry = new THREE.EdgesGeometry(cubeMesh.geometry);
+  setCubeEdgePositions(cubeMesh.geometry, edgeLineGeometry);
+  edgeLines.computeLineDistances();
   edgeLines.position.copy(cubeMesh.position);
 
   const glowRadius = Math.max(sizeX, sizeY, sizeZ) * 0.72;
@@ -1129,6 +1174,7 @@ function onResize() {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
+  updateEdgeLineResolution();
   prepareAllCanvases();
   fitAppToWindow();
 }
@@ -1168,8 +1214,34 @@ function fitAppToWindow() {
   fitParamStrip();
 }
 
+function initAppTitleGradient() {
+  const el = document.querySelector("#appTitleText");
+  if (!el) {
+    return;
+  }
+  const text = el.textContent ?? "";
+  const start = { r: 249, g: 168, b: 212 };
+  const end = { r: 16, g: 185, b: 129 };
+  const chars = [...text];
+  const denom = Math.max(chars.length - 1, 1);
+
+  el.textContent = "";
+  for (let i = 0; i < chars.length; i += 1) {
+    const t = i / denom;
+    const r = Math.round(start.r + (end.r - start.r) * t);
+    const g = Math.round(start.g + (end.g - start.g) * t);
+    const b = Math.round(start.b + (end.b - start.b) * t);
+    const span = document.createElement("span");
+    span.className = "app-title-char";
+    span.style.color = `rgb(${r}, ${g}, ${b})`;
+    span.textContent = chars[i] === " " ? "\u00a0" : chars[i];
+    el.appendChild(span);
+  }
+}
+
 window.addEventListener("resize", onResize);
 window.addEventListener("load", () => {
+  initAppTitleGradient();
   requestAnimationFrame(fitAppToWindow);
   const bridgeParam = new URLSearchParams(location.search).get("bridge");
   if (bridgeParam !== "0") {

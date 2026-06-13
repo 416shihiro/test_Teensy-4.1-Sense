@@ -1,6 +1,15 @@
 :root {
   color-scheme: dark;
   --bg: #0c1016;
+  --bg-gradient-cherry: #4d1a38;
+  --bg-gradient-emerald: #0d4539;
+  --title-gradient-start: #f9a8d4;
+  --title-gradient-mid: #ec4899;
+  --title-gradient-end: #34d399;
+  --title-gradient-finish: #10b981;
+  --panel-glass: rgba(8, 14, 22, 0.34);
+  --panel-glass-inner: rgba(6, 10, 16, 0.28);
+  --panel-border-glass: rgba(255, 255, 255, 0.14);
   --panel: #141b24;
   --panel-border: #263244;
   --text: #ecf4ff;
@@ -24,7 +33,13 @@ body {
 
 body {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  background: radial-gradient(circle at top, #132033, #0b1017 55%);
+  background: linear-gradient(
+    to top right,
+    var(--bg-gradient-cherry) 0%,
+    #1a2230 42%,
+    var(--bg-gradient-emerald) 100%
+  );
+  background-attachment: fixed;
   color: var(--text);
   margin: 0;
   overflow: hidden;
@@ -55,12 +70,12 @@ button:hover {
 
 #bridgeButton.btn-bridge {
   font-weight: 700;
-  font-size: clamp(0.88rem, 2vh, 1.05rem);
-  padding: 0.55rem 1.1rem;
+  font-size: clamp(0.7rem, 1.6vh, 0.84rem);
+  padding: 0.44rem 0.88rem;
   background: #ec4899;
   border-color: #f9a8d4;
   color: #fff;
-  box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.35), 0 4px 14px rgba(236, 72, 153, 0.28);
+  box-shadow: 0 0 0 1px rgba(236, 72, 153, 0.35), 0 3px 11px rgba(236, 72, 153, 0.28);
 }
 
 #bridgeButton.btn-bridge:hover {
@@ -146,6 +161,15 @@ button:disabled {
   margin: 0;
   font-size: clamp(0.62rem, 1.5vh, 0.88rem);
   white-space: nowrap;
+}
+
+.app-title-text {
+  display: inline;
+  font-weight: 700;
+}
+
+.app-title-char {
+  font-weight: 700;
 }
 
 .app-version {
@@ -253,12 +277,20 @@ button:disabled {
 }
 
 .status-pill,
-.panel,
 .stat-card {
-  background: rgba(20, 27, 36, 0.9);
+  background: rgba(20, 27, 36, 0.72);
   border: 1px solid var(--panel-border);
   border-radius: 0.65rem;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+}
+
+.panel {
+  background: var(--panel-glass);
+  border: 1px solid var(--panel-border-glass);
+  border-radius: 0.65rem;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
 }
 
 .status-pill {
@@ -348,7 +380,7 @@ button:disabled {
   gap: 0.04rem;
   padding: 0.1rem 0.12rem 0.06rem;
   border-left: 2px solid var(--group-color);
-  background: #0d141d;
+  background: var(--panel-glass-inner);
   border-radius: 0.35rem;
   flex: 1 1 0;
   min-width: 0;
@@ -374,7 +406,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: clamp(18px, 2.6vw, 26px);
+  width: clamp(23px, 3.38vw, 34px);
   cursor: pointer;
   flex: 0 0 auto;
 }
@@ -383,7 +415,7 @@ button:disabled {
   position: absolute;
   inset: 0;
   width: 100%;
-  height: clamp(30px, 4.5vmin, 38px);
+  height: clamp(39px, 5.85vmin, 49px);
   margin: 0;
   opacity: 0;
   cursor: pointer;
@@ -391,11 +423,11 @@ button:disabled {
 }
 
 .param-dial-ring {
-  width: clamp(16px, 2.3vw, 22px);
-  height: clamp(16px, 2.3vw, 22px);
+  width: clamp(21px, 3vw, 29px);
+  height: clamp(21px, 3vw, 29px);
   border-radius: 50%;
-  background: #111a27;
-  border: 1.5px solid color-mix(in srgb, var(--dial-color) 55%, #263244);
+  background: rgba(12, 18, 28, 0.45);
+  border: 2px solid color-mix(in srgb, var(--dial-color) 55%, rgba(255, 255, 255, 0.2));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -403,25 +435,25 @@ button:disabled {
 }
 
 .param-dial-pointer {
-  width: 2px;
-  height: clamp(6px, 1.1vmin, 8px);
+  width: 2.5px;
+  height: clamp(8px, 1.43vmin, 10px);
   border-radius: 1px;
   background: var(--dial-color);
   transform: rotate(var(--dial-angle, -135deg));
-  transform-origin: center 7px;
-  margin-top: -4px;
+  transform-origin: center 9px;
+  margin-top: -5px;
 }
 
 .param-dial-key {
   margin-top: 0.02rem;
-  font-size: clamp(0.44rem, 0.9vh, 0.52rem);
+  font-size: clamp(0.57rem, 1.17vh, 0.68rem);
   font-weight: 700;
   color: var(--dial-color);
   line-height: 1;
 }
 
 .param-dial-value {
-  font-size: clamp(0.38rem, 0.78vh, 0.46rem);
+  font-size: clamp(0.49rem, 1.01vh, 0.6rem);
   font-variant-numeric: tabular-nums;
   color: var(--muted);
   line-height: 1;
@@ -506,15 +538,29 @@ button:disabled {
   min-height: 0;
   border-radius: 0.55rem;
   overflow: hidden;
-  background: linear-gradient(180deg, rgba(20, 30, 48, 0.9), rgba(12, 17, 25, 0.95));
-  border: 1px solid rgba(96, 165, 250, 0.14);
+  background: var(--panel-glass-inner);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.three-container canvas {
+  display: block;
+  background: transparent !important;
 }
 
 .legend-gradient {
   width: 72px;
   height: 6px;
   border-radius: 999px;
-  background: linear-gradient(90deg, #2563eb, #22c55e, #ef4444);
+  background: linear-gradient(
+    90deg,
+    #000000 0%,
+    #4a0808 14%,
+    #e61414 28%,
+    #ff7300 48%,
+    #ffeb1f 68%,
+    #ffffff 84%,
+    #d1edff 100%
+  );
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -621,7 +667,7 @@ button:disabled {
   flex: 1;
   min-height: 0;
   border-radius: 0.35rem;
-  background: #0d141d;
+  background: var(--panel-glass-inner);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
