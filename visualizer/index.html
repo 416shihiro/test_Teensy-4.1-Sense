@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Human Instrument Sensor Visualizer</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <title>SHIHIRO Human Inst Sensor Viz ver.20260617a</title>
+    <link rel="stylesheet" href="./styles.css?v=20260617c" />
     <script type="importmap">
       {
         "imports": {
@@ -19,98 +19,93 @@
     <div class="app-shell" id="appShell">
       <div class="app-header">
         <header class="topbar">
-          <h1>Human Instrument Sensor Visualizer</h1>
+          <h1>SHIHIRO Human Inst Sensor Viz <span class="app-version">ver.20260617a</span></h1>
           <div class="actions">
-            <label class="baud-label">
-              Baud
-              <select id="serialBaudSelect" aria-label="Serial baud rate">
-                <option value="115200" selected>115200 (Teensy)</option>
-                <option value="921600">921600 (XIAO)</option>
+            <button id="bridgeButton" class="btn-bridge">Bridge · Teensy</button>
+            <button id="connectButton" class="btn-serial">Serial Direct</button>
+            <button id="disconnectButton" disabled>Disconnect</button>
+            <label class="device-label">
+              Target
+              <select id="deviceProfileSelect" aria-label="Device profile">
+                <option value="teensy" selected>Teensy 4.1</option>
+                <option value="xiao">XIAO ESP32 S3</option>
               </select>
             </label>
-            <button id="connectButton">Connect Serial</button>
-            <button id="disconnectButton" disabled>Disconnect</button>
-            <button id="demoButton">Demo Mode</button>
+            <button id="demoButton">Demo</button>
           </div>
         </header>
         <section class="status-strip">
           <div class="status-pill">
-            <span class="label">Serial</span>
+            <span class="label">Device</span>
+            <span id="deviceStatus" class="device-status">—</span>
+          </div>
+          <div class="status-pill">
+            <span class="label">Link</span>
             <span id="serialStatus">Disconnected</span>
           </div>
           <div class="status-pill">
             <span class="label">Browser</span>
             <span id="browserStatus">Checking...</span>
           </div>
-          <div class="status-pill">
-            <span class="label">Last line</span>
+          <div class="status-pill status-pill-wide">
+            <span class="label">Last</span>
             <span id="lastLineType">none</span>
+            <pre id="rawLine" class="raw-line-inline">No data yet.</pre>
           </div>
         </section>
       </div>
 
       <main class="content-grid">
-        <section class="panel stats-panel stats-compact">
-          <div class="stats-compact-head">
-            <h2>Live Stats</h2>
-            <pre id="rawLine" class="raw-line-compact">No serial data yet.</pre>
-          </div>
-          <div class="stats-inline">
-            <div class="stat-chip ax"><span>ax</span><strong id="axValue">0.000</strong></div>
-            <div class="stat-chip ay"><span>ay</span><strong id="ayValue">0.000</strong></div>
-            <div class="stat-chip az"><span>az</span><strong id="azValue">0.000</strong></div>
-            <div class="stat-chip"><span>|a|</span><strong id="accelMagValue">0.000</strong></div>
-            <div class="stat-chip gx"><span>gx</span><strong id="gxValue">0.000</strong></div>
-            <div class="stat-chip gy"><span>gy</span><strong id="gyValue">0.000</strong></div>
-            <div class="stat-chip gz"><span>gz</span><strong id="gzValue">0.000</strong></div>
-            <div class="stat-chip"><span>|ω|</span><strong id="gyroMagValue">0.000</strong></div>
-            <div class="stat-chip"><span>raw</span><strong id="piezoRawValue">0</strong></div>
-            <div class="stat-chip piezo"><span>env</span><strong id="piezoEnvValue">0.0</strong></div>
-            <div class="stat-chip piezo"><span>peak</span><strong id="piezoPeakValue">0.0</strong></div>
-            <div class="stat-chip"><span>hit</span><strong id="piezoHitValue">0</strong></div>
-            <div class="stat-chip mic"><span>mic</span><strong id="micRawValue">0</strong></div>
-            <div class="stat-chip mic"><span>mEnv</span><strong id="micEnvValue">0.0</strong></div>
-          </div>
-        </section>
-
         <div class="visual-row">
           <section class="panel viewer-panel">
             <div class="panel-header panel-header-tight">
               <h2>3D Preview</h2>
-              <p>3D=スケッチ軸（X右・Y奥・Z上）/ 辺=線形加速度 / 色=ピエゾ</p>
+              <p class="axis-legend">X tip · Y left · Z up</p>
             </div>
             <div id="threeContainer" class="three-container"></div>
             <div class="legend">
               <span class="legend-gradient"></span>
-              <span>piezo low</span>
-              <span class="spacer"></span>
-              <span>piezo high</span>
+              <span>piezo low → high</span>
             </div>
           </section>
 
-          <div class="graphs-stack">
-            <section class="panel graph-panel">
-              <div class="panel-header panel-header-tight">
-                <h2>Acceleration</h2>
-                <p>ax red / ay green / az blue</p>
-              </div>
-              <canvas id="motionCanvas" width="480" height="420"></canvas>
-            </section>
-
-            <section class="panel graph-panel">
-              <div class="panel-header panel-header-tight">
-                <h2>Mic</h2>
-                <p>MAX4466 env (violet)</p>
-              </div>
-              <canvas id="micCanvas" width="480" height="420"></canvas>
-            </section>
-
-            <section class="panel graph-panel">
-              <div class="panel-header panel-header-tight">
+          <div class="graph-column">
+            <section class="panel graph-panel graph-panel-compact">
+              <div class="panel-header panel-header-mini">
                 <h2>Piezo</h2>
-                <p>env cyan / peak orange · Pz threshold/ratio</p>
               </div>
-              <canvas id="piezoCanvas" width="480" height="420"></canvas>
+              <canvas id="piezoCanvas" width="240" height="120"></canvas>
+            </section>
+
+            <section class="panel graph-panel graph-panel-compact">
+              <div class="panel-header panel-header-mini">
+                <h2>Mic</h2>
+              </div>
+              <canvas id="micCanvas" width="240" height="120"></canvas>
+            </section>
+
+            <section class="panel graph-panel graph-panel-compact">
+              <div class="panel-header panel-header-mini">
+                <h2>Accel</h2>
+                <p class="axis-legend">X tip · Y left · Z up</p>
+              </div>
+              <canvas id="motionCanvas" width="240" height="120"></canvas>
+            </section>
+
+            <section class="panel graph-panel graph-panel-compact">
+              <div class="panel-header panel-header-mini">
+                <h2>Rotation</h2>
+                <p class="axis-legend">X tip · Y left · Z up</p>
+              </div>
+              <canvas id="gyroCanvas" width="240" height="120"></canvas>
+            </section>
+
+            <section class="panel graph-panel graph-panel-compact">
+              <div class="panel-header panel-header-mini">
+                <h2>Mag</h2>
+                <p class="axis-legend">X tip · Y left · Z up</p>
+              </div>
+              <canvas id="magCanvas" width="240" height="120"></canvas>
             </section>
           </div>
         </div>
@@ -133,6 +128,6 @@
     </div>
     </div>
 
-    <script type="module" src="./app.js"></script>
+    <script type="module" src="./app.js?v=20260617c"></script>
   </body>
   </html>

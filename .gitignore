@@ -1,3 +1,6 @@
+__pycache__/
+*.pyc
 .pio/
+firmware/teensy/sensor_visualizer/lib/
 platformio_local.ini
 local-archive/

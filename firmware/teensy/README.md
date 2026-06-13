@@ -1,29 +1,39 @@
 # Teensy 4.1 firmware (Human Instrument)
 
-## Cursor / PlatformIO（XIAO と同じ — Arduino IDE 不要）
+## Cursor / PlatformIO（Arduino IDE 不要）
 
 各スケッチは **小さな PlatformIO プロジェクト**（`platformio.ini` + `src/main.cpp`）です。  
-リポジトリ直下から `-d` でディレクトリを指定して実行します。
+リポジトリ直下から `--project-dir` でディレクトリを指定して実行します。
 
-### 1. COM ポート（初回だけ）
+初回ビルド時、PlatformIO が **SparkFun ICM-20948** ライブラリを自動取得します（`lib_deps`）。
 
-`platformio_local.ini.example` をリポジトリ直下にコピー → `platformio_local.ini` を編集するか、毎回:
+### 1. COM ポート
 
 ```powershell
-pio run --project-dir firmware/teensy/sensor_visualizer -t upload --upload-port COM7
+pio run --project-dir firmware/teensy/sensor_visualizer -t upload --upload-port COM8
 ```
 
-### 2. Visualizer 用ファーム（MPU + ピエゾ + マイク）
+### 2. Visualizer 用ファーム（ICM-20948 + USB Audio + Serial）
 
 ```powershell
-cd "test_Teensy-4.1-Sense"
+cd test_Teensy-4.1-Sense
 pio run --project-dir firmware/teensy/sensor_visualizer -t upload
-pio device monitor --project-dir firmware/teensy/sensor_visualizer
 ```
 
-`DATA,...` 行が出れば OK。**monitor 中はブラウザ visualizer が COM を使えない**ので、visualizer の前に `Ctrl+C`。
+- **USB Audio**: piezo L / mic R @ 44.1kHz → Live（ASIO4ALL）
+- **Serial**: `DATA` 20Hz（22 列、弓座標 `bow_frame.h`）
+- 手順: [`docs/USB_AUDIO_SETUP.md`](../../docs/USB_AUDIO_SETUP.md)
+- 弓軸: [`docs/BOW_AXIS_MOUNT.md`](../../docs/BOW_AXIS_MOUNT.md)
 
-### 3. ADC のみ（ピエゾ + マイク）
+### 3. セッション一括起動（hub + visualizer）
+
+```powershell
+powershell -File scripts\start_session.ps1
+```
+
+→ `serial_hub.py`（XIAO リポ）+ `http://localhost:4173/?bridge=1`
+
+### 4. ADC のみ（ピエゾ + マイク）
 
 ```powershell
 pio run --project-dir firmware/teensy/piezo_mic_adc_test -t upload
@@ -34,15 +44,7 @@ pio device monitor --project-dir firmware/teensy/piezo_mic_adc_test
 
 | プロジェクト | ソース |
 |--------------|--------|
-| `firmware/teensy/sensor_visualizer/` | `src/main.cpp` |
+| `firmware/teensy/sensor_visualizer/` | `src/main.cpp`, `bow_frame.h` |
 | `firmware/teensy/piezo_mic_adc_test/` | `src/main.cpp` |
-
-`firmware/teensy/*/*.ino` は旧 Arduino IDE 用（編集は **`src/main.cpp`** を正本に）。
-
-### Visualizer
-
-1. `pio device monitor` を止める  
-2. `cd visualizer` → `py -m http.server 4173`  
-3. http://localhost:4173 → **115200 (Teensy)** → **Connect Serial** → COM7  
 
 配線: [`docs/hardware/BREADBOARD_TEENSY_V0.md`](../../docs/hardware/BREADBOARD_TEENSY_V0.md)

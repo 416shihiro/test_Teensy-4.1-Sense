@@ -1,46 +1,46 @@
 /**
  * Shared parameter schema for the browser visualizer and future Max for Live.
- * IDs and ranges stay stable so the same JSON can be sent over OSC / dict in M4L.
+ * ICM-20948 (9-axis) + piezo + MAX4466 mic.
  */
-export const PARAM_SCHEMA_VERSION = 1;
-export const PARAM_STORAGE_KEY = "human-instrument-visualizer-params-v2";
+export const PARAM_SCHEMA_VERSION = 2;
+export const PARAM_STORAGE_KEY = "human-instrument-visualizer-params-v3";
 
 /** @typedef {{ threshold: number, ratio: number }} ParamKnob */
 
 /** @type {Record<string, { label: string, unit: string, threshold: { min: number, max: number, step: number, default: number }, ratio: { min: number, max: number, step: number, default: number } }>} */
 export const PARAM_SPEC = {
   rotX: {
-    label: "Rotation X (pitch)",
+    label: "Pitch",
     unit: "rad",
     threshold: { min: 0, max: 0.35, step: 0.005, default: 0.01 },
     ratio: { min: 0, max: 3, step: 0.05, default: 1 },
   },
   rotY: {
-    label: "Rotation Y (yaw rate)",
+    label: "Yaw rate",
     unit: "rad/s",
     threshold: { min: 0, max: 2, step: 0.02, default: 0.03 },
     ratio: { min: 0, max: 3, step: 0.05, default: 1 },
   },
   rotZ: {
-    label: "Rotation Z (roll)",
+    label: "Roll",
     unit: "rad",
     threshold: { min: 0, max: 0.35, step: 0.005, default: 0.01 },
     ratio: { min: 0, max: 3, step: 0.05, default: 1 },
   },
   linX: {
-    label: "Linear accel X",
+    label: "Lin X",
     unit: "m/s²",
     threshold: { min: 0, max: 2, step: 0.02, default: 0.1 },
     ratio: { min: 0, max: 4, step: 0.05, default: 2 },
   },
   linY: {
-    label: "Linear accel Y",
+    label: "Lin Y",
     unit: "m/s²",
     threshold: { min: 0, max: 2, step: 0.02, default: 0.1 },
     ratio: { min: 0, max: 4, step: 0.05, default: 2 },
   },
   linZ: {
-    label: "Linear accel Z",
+    label: "Lin Z",
     unit: "m/s²",
     threshold: { min: 0, max: 2, step: 0.02, default: 0.1 },
     ratio: { min: 0, max: 4, step: 0.05, default: 2 },
@@ -52,14 +52,21 @@ export const PARAM_SPEC = {
     ratio: { min: 0, max: 3, step: 0.05, default: 1 },
   },
   mic: {
-    label: "Mic (MAX4466)",
+    label: "Mic",
     unit: "env",
     threshold: { min: 0, max: 3000, step: 10, default: 80 },
     ratio: { min: 0, max: 3, step: 0.05, default: 1 },
   },
 };
 
-export const PARAM_IDS = Object.keys(PARAM_SPEC);
+export const PARAM_GROUPS = [
+  { label: "Gyro", ids: ["rotX", "rotY", "rotZ"] },
+  { label: "Lin", ids: ["linX", "linY", "linZ"] },
+  { label: "Pz", ids: ["piezo"] },
+  { label: "Mc", ids: ["mic"] },
+];
+
+export const PARAM_IDS = PARAM_GROUPS.flatMap((group) => group.ids);
 
 /** Axis colors aligned with graph / Three.js (X red, Y green, Z blue). */
 export const PARAM_COLORS = {
@@ -145,6 +152,7 @@ export function serializeForMax(params) {
   return {
     version: PARAM_SCHEMA_VERSION,
     source: "human-instrument-visualizer",
+    imu: "ICM-20948",
     params: PARAM_IDS.map((id) => ({
       id,
       label: PARAM_SPEC[id].label,

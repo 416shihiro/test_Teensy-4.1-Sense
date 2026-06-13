@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
   PARAM_COLORS,
+  PARAM_GROUPS,
   PARAM_IDS,
   PARAM_SHORT,
   PARAM_SPEC,
@@ -18,6 +19,8 @@ const GRAPH_SIZE = 240;
 const PIEZO_REFERENCE_MAX = 2400;
 const MIC_REFERENCE_MAX = 3000;
 const AXIS_REFERENCE = 12.0;
+const GYRO_REFERENCE = 0.35;
+const MAG_REFERENCE = 120.0;
 const GRAVITY_MS2 = 9.81;
 const STILL_GYRO_RAD = 0.1;
 const GRAVITY_LP_ALPHA = 0.07;
@@ -31,15 +34,18 @@ const BOX_MIN_HALF = 0.38;
 const BOX_EDGE_SCALE_LARGE = 3;
 const BOX_MAX_EXTRA_HALF = BOX_MIN_HALF * 2 * (BOX_EDGE_SCALE_LARGE - 1);
 
-// MPU6050 on breadboard (photo sketch): chip X+ = photo right, Y+ = along breadboard
-// into scene, Z+ = up. Raw sensor axes match this board frame (GY-521 long edge = Y).
+// Teensy firmware outputs bow frame (ICM-20948 mount, calibrated 2026-06-17b).
+// +X tip/roll, +Y left/pitch, +Z up. Graphs: red=X green=Y blue=Z.
 function sensorToBoardSample(sample) {
   const ax = sample.ax;
   const ay = sample.ay;
   const az = sample.az;
   const gx = sample.gx;
-  const gy = -sample.gy;
+  const gy = sample.gy;
   const gz = sample.gz;
+  const mx = sample.mx ?? 0;
+  const my = sample.my ?? 0;
+  const mz = sample.mz ?? 0;
   return {
     ...sample,
     ax,
@@ -48,42 +54,93 @@ function sensorToBoardSample(sample) {
     gx,
     gy,
     gz,
+    mx,
+    my,
+    mz,
+    magMag: sample.magMag ?? Math.hypot(mx, my, mz),
+    headingDeg: sample.headingDeg ?? 0,
     accelMag: Math.hypot(ax, ay, az),
     gyroMag: Math.hypot(gx, gy, gz),
   };
 }
 
+const BRIDGE_STREAM_URL = "http://127.0.0.1:8765/stream";
+
+const DEVICE_PROFILES = {
+  teensy: {
+    id: "teensy",
+    label: "Teensy 4.1",
+    short: "Teensy",
+    baud: 115200,
+    usbVendorId: 0x16c0,
+  },
+  xiao: {
+    id: "xiao",
+    label: "XIAO ESP32 S3",
+    short: "XIAO",
+    baud: 921600,
+    usbVendorId: 0x303a,
+  },
+};
+
 const ui = {
   connectButton: document.querySelector("#connectButton"),
+  bridgeButton: document.querySelector("#bridgeButton"),
   disconnectButton: document.querySelector("#disconnectButton"),
   demoButton: document.querySelector("#demoButton"),
+  deviceProfileSelect: document.querySelector("#deviceProfileSelect"),
+  deviceStatus: document.querySelector("#deviceStatus"),
   serialStatus: document.querySelector("#serialStatus"),
   browserStatus: document.querySelector("#browserStatus"),
   lastLineType: document.querySelector("#lastLineType"),
   rawLine: document.querySelector("#rawLine"),
   motionCanvas: document.querySelector("#motionCanvas"),
+  gyroCanvas: document.querySelector("#gyroCanvas"),
+  magCanvas: document.querySelector("#magCanvas"),
   piezoCanvas: document.querySelector("#piezoCanvas"),
-  axValue: document.querySelector("#axValue"),
-  ayValue: document.querySelector("#ayValue"),
-  azValue: document.querySelector("#azValue"),
-  gxValue: document.querySelector("#gxValue"),
-  gyValue: document.querySelector("#gyValue"),
-  gzValue: document.querySelector("#gzValue"),
-  accelMagValue: document.querySelector("#accelMagValue"),
-  gyroMagValue: document.querySelector("#gyroMagValue"),
-  piezoRawValue: document.querySelector("#piezoRawValue"),
-  piezoEnvValue: document.querySelector("#piezoEnvValue"),
-  piezoPeakValue: document.querySelector("#piezoPeakValue"),
-  piezoHitValue: document.querySelector("#piezoHitValue"),
-  micRawValue: document.querySelector("#micRawValue"),
-  micEnvValue: document.querySelector("#micEnvValue"),
   micCanvas: document.querySelector("#micCanvas"),
-  serialBaudSelect: document.querySelector("#serialBaudSelect"),
 };
+
+function getSelectedDeviceProfile() {
+  const id = ui.deviceProfileSelect?.value ?? "teensy";
+  return DEVICE_PROFILES[id] ?? DEVICE_PROFILES.teensy;
+}
+
+function renderDeviceStatus(deviceId, detail = "") {
+  if (!ui.deviceStatus) {
+    return;
+  }
+  const profile = DEVICE_PROFILES[deviceId];
+  if (!profile) {
+    ui.deviceStatus.textContent = detail || "—";
+    return;
+  }
+  ui.deviceStatus.innerHTML = `<span class="device-tag ${deviceId}">${profile.short}</span>${detail ? `<span>${detail}</span>` : ""}`;
+}
+
+function setLinkStatus({ deviceId = null, mode = "none", detail = "", tone = "normal" } = {}) {
+  if (deviceId) {
+    renderDeviceStatus(deviceId, detail);
+  } else if (ui.deviceStatus) {
+    ui.deviceStatus.textContent = "—";
+  }
+
+  const modeLabels = {
+    bridge: "Bridge (hub)",
+    serial: "Serial direct",
+    demo: "Demo",
+    none: "Disconnected",
+  };
+  const text = mode === "none" ? modeLabels.none : `${modeLabels[mode] ?? mode}${detail ? ` · ${detail}` : ""}`;
+  ui.serialStatus.textContent = text;
+  ui.serialStatus.style.color =
+    tone === "ok" ? "#34d399" : tone === "error" ? "#f87171" : "#ecf4ff";
+}
 
 const state = {
   port: null,
   reader: null,
+  bridgeSource: null,
   keepReading: false,
   demoEnabled: false,
   lastLine: "",
@@ -96,6 +153,11 @@ const state = {
     gx: 0,
     gy: 0,
     gz: 0,
+    mx: 0,
+    my: 0,
+    mz: 0,
+    magMag: 0,
+    headingDeg: 0,
     accelMag: 0,
     gyroMag: 0,
     piezoRaw: 2048,
@@ -109,6 +171,12 @@ const state = {
     ax: Array(GRAPH_SIZE).fill(0),
     ay: Array(GRAPH_SIZE).fill(0),
     az: Array(GRAPH_SIZE).fill(0),
+    gx: Array(GRAPH_SIZE).fill(0),
+    gy: Array(GRAPH_SIZE).fill(0),
+    gz: Array(GRAPH_SIZE).fill(0),
+    mx: Array(GRAPH_SIZE).fill(0),
+    my: Array(GRAPH_SIZE).fill(0),
+    mz: Array(GRAPH_SIZE).fill(0),
     piezoEnv: Array(GRAPH_SIZE).fill(0),
     piezoPeak: Array(GRAPH_SIZE).fill(0),
     piezoHit: Array(GRAPH_SIZE).fill(0),
@@ -256,6 +324,11 @@ function axisSignedGrowth(linearComponent, axisParam) {
 }
 
 function integrateYaw(sample, dt) {
+  if ((sample.magMag ?? 0) > 1 && Number.isFinite(sample.headingDeg)) {
+    state.motion.yaw = THREE.MathUtils.degToRad(sample.headingDeg);
+    return;
+  }
+
   const gravityMag = Math.hypot(sample.ax, sample.ay, sample.az) || GRAVITY_MS2;
   const ux = sample.ax / gravityMag;
   const uy = sample.ay / gravityMag;
@@ -299,26 +372,12 @@ function pushHistory(sample) {
 }
 
 function updateText(sample) {
-  ui.axValue.textContent = sample.ax.toFixed(3);
-  ui.ayValue.textContent = sample.ay.toFixed(3);
-  ui.azValue.textContent = sample.az.toFixed(3);
-  ui.gxValue.textContent = sample.gx.toFixed(3);
-  ui.gyValue.textContent = sample.gy.toFixed(3);
-  ui.gzValue.textContent = sample.gz.toFixed(3);
-  ui.accelMagValue.textContent = sample.accelMag.toFixed(3);
-  ui.gyroMagValue.textContent = sample.gyroMag.toFixed(3);
-  ui.piezoRawValue.textContent = `${sample.piezoRaw}`;
-  ui.piezoEnvValue.textContent = sample.piezoEnv.toFixed(1);
-  ui.piezoPeakValue.textContent = sample.piezoPeak.toFixed(1);
-  ui.piezoHitValue.textContent = `${sample.piezoHit}`;
-  if (ui.micRawValue) {
-    ui.micRawValue.textContent = `${sample.micRaw ?? 0}`;
+  if (ui.rawLine) {
+    ui.rawLine.textContent = state.lastLine || "No data yet.";
   }
-  if (ui.micEnvValue) {
-    ui.micEnvValue.textContent = (sample.micEnv ?? 0).toFixed(1);
+  if (ui.lastLineType) {
+    ui.lastLineType.textContent = state.lineType;
   }
-  ui.rawLine.textContent = state.lastLine || "No serial data yet.";
-  ui.lastLineType.textContent = state.lineType;
 }
 
 function parseFloatSafe(value) {
@@ -354,10 +413,22 @@ function parseDataLine(line) {
     gyroMag: parseFloatSafe(parts[14]),
     micRaw: 0,
     micEnv: 0,
+    mx: 0,
+    my: 0,
+    mz: 0,
+    magMag: 0,
+    headingDeg: 0,
   };
   if (parts.length >= 17) {
     row.micRaw = parseIntSafe(parts[15]);
     row.micEnv = parseFloatSafe(parts[16]);
+  }
+  if (parts.length >= 22) {
+    row.mx = parseFloatSafe(parts[17]);
+    row.my = parseFloatSafe(parts[18]);
+    row.mz = parseFloatSafe(parts[19]);
+    row.magMag = parseFloatSafe(parts[20]);
+    row.headingDeg = parseFloatSafe(parts[21]);
   }
   return row;
 }
@@ -383,6 +454,11 @@ function parseSensorLine(line) {
     gz: parseFloatSafe(parts[10]),
     accelMag: parseFloatSafe(parts[11]),
     gyroMag: parseFloatSafe(parts[12]),
+    mx: 0,
+    my: 0,
+    mz: 0,
+    magMag: 0,
+    headingDeg: 0,
     micRaw: 0,
     micEnv: 0,
   };
@@ -423,6 +499,11 @@ async function disconnectSerial() {
   state.serialFrameParser?.reset();
   resetMotionState();
 
+  if (state.bridgeSource) {
+    state.bridgeSource.close();
+    state.bridgeSource = null;
+  }
+
   try {
     if (state.reader) {
       await state.reader.cancel();
@@ -443,8 +524,67 @@ async function disconnectSerial() {
   state.reader = null;
   state.port = null;
   ui.connectButton.disabled = false;
+  if (ui.bridgeButton) {
+    ui.bridgeButton.disabled = false;
+  }
   ui.disconnectButton.disabled = true;
-  setStatus("Disconnected");
+  setLinkStatus({ mode: "none" });
+}
+
+async function connectBridge() {
+  if (state.port || state.bridgeSource) {
+    await disconnectSerial();
+  }
+
+  const device = getSelectedDeviceProfile();
+  state.demoEnabled = false;
+  ui.connectButton.disabled = true;
+  if (ui.bridgeButton) {
+    ui.bridgeButton.disabled = true;
+  }
+  setLinkStatus({
+    deviceId: device.id,
+    mode: "bridge",
+    detail: "connecting…",
+  });
+
+  const source = new EventSource(BRIDGE_STREAM_URL);
+  state.bridgeSource = source;
+
+  source.onopen = () => {
+    ui.disconnectButton.disabled = false;
+    setLinkStatus({
+      deviceId: device.id,
+      mode: "bridge",
+      detail: "hub",
+      tone: "ok",
+    });
+    ui.serialStatus.textContent = "Bridge (hub) · M4L 共有 · COM8";
+    ui.serialStatus.style.color = "#34d399";
+  };
+
+  source.onmessage = (event) => {
+    consumeLine(event.data);
+  };
+
+  source.onerror = () => {
+    if (state.bridgeSource !== source) {
+      return;
+    }
+    setLinkStatus({
+      deviceId: device.id,
+      mode: "bridge",
+      detail: "hub 未起動",
+      tone: "error",
+    });
+    source.close();
+    state.bridgeSource = null;
+    ui.connectButton.disabled = false;
+    if (ui.bridgeButton) {
+      ui.bridgeButton.disabled = false;
+    }
+    ui.disconnectButton.disabled = true;
+  };
 }
 
 async function readLoop() {
@@ -481,7 +621,7 @@ function formatConnectError(error) {
     return "もう一度 Connect Serial をクリックしてください";
   }
   if (message.includes("Failed to open") || message.includes("Access denied")) {
-    return "シリアルが他アプリで使用中です（Arduino シリアルモニタを閉じて再試行）";
+    return "シリアルが他アプリで使用中です（serial_hub / シリアルモニタを閉じて再試行）";
   }
 
   return `接続失敗: ${message}`;
@@ -489,7 +629,7 @@ function formatConnectError(error) {
 
 async function connectSerial() {
   if (!("serial" in navigator)) {
-    setStatus("Web Serial 非対応です。Chrome または Edge を使ってください", "error");
+    setLinkStatus({ mode: "none", detail: "Web Serial 非対応", tone: "error" });
     return;
   }
 
@@ -497,30 +637,47 @@ async function connectSerial() {
     await disconnectSerial();
   }
 
+  const device = getSelectedDeviceProfile();
   state.demoEnabled = false;
   ui.connectButton.disabled = true;
-  const baudRate = Number.parseInt(ui.serialBaudSelect?.value ?? "115200", 10);
-  setStatus(`COM を選んで「接続」… (${baudRate})`);
+  setLinkStatus({
+    deviceId: device.id,
+    mode: "serial",
+    detail: `COM 選択 · ${device.baud}`,
+  });
 
   try {
     state.port = await navigator.serial.requestPort({
-      filters: [{ usbVendorId: 0x303a }, { usbVendorId: 0x16c0 }],
+      filters: [{ usbVendorId: device.usbVendorId }],
     });
-    await state.port.open({ baudRate });
+    await state.port.open({ baudRate: device.baud });
     resetMotionState();
     state.serialFrameParser = createSerialFrameParser({
       onLine: (line) => consumeLine(line),
     });
     state.keepReading = true;
     ui.disconnectButton.disabled = false;
-    setStatus("Connected", "ok");
+    if (ui.bridgeButton) {
+      ui.bridgeButton.disabled = true;
+    }
+    setLinkStatus({
+      deviceId: device.id,
+      mode: "serial",
+      detail: `${device.baud} baud`,
+      tone: "ok",
+    });
     readLoop();
   } catch (error) {
     state.port = null;
     state.keepReading = false;
     ui.connectButton.disabled = false;
     ui.disconnectButton.disabled = true;
-    setStatus(formatConnectError(error), "error");
+    setLinkStatus({
+      deviceId: device.id,
+      mode: "serial",
+      detail: formatConnectError(error),
+      tone: "error",
+    });
   }
 }
 
@@ -531,6 +688,11 @@ function generateDemoSample(timeSeconds) {
   const gx = Math.cos(timeSeconds * 1.4) * 0.8;
   const gy = Math.sin(timeSeconds * 1.2) * 0.6;
   const gz = Math.sin(timeSeconds * 0.8) * 0.5;
+  const headingDeg = (timeSeconds * 28) % 360;
+  const headingRad = THREE.MathUtils.degToRad(headingDeg);
+  const mx = Math.cos(headingRad) * 35;
+  const my = Math.sin(headingRad) * 35;
+  const mz = 8 + Math.sin(timeSeconds * 0.7) * 3;
   const piezoEnv = (Math.sin(timeSeconds * 3.5) * 0.5 + 0.5) ** 2 * 1800;
   const piezoPeak = piezoEnv + Math.sin(timeSeconds * 12.0) * 180;
   const micEnv = (Math.sin(timeSeconds * 2.8) * 0.5 + 0.5) ** 2 * 900;
@@ -548,8 +710,13 @@ function generateDemoSample(timeSeconds) {
     gx,
     gy,
     gz,
+    mx,
+    my,
+    mz,
     accelMag: Math.hypot(ax, ay, az),
     gyroMag: Math.hypot(gx, gy, gz),
+    magMag: Math.hypot(mx, my, mz),
+    headingDeg,
     micRaw: Math.round(2048 + Math.sin(timeSeconds * 4.1) * 320),
     micEnv,
   };
@@ -558,7 +725,7 @@ function generateDemoSample(timeSeconds) {
 function startDemo() {
   state.demoEnabled = true;
   resetMotionState();
-  setStatus("Demo mode", "ok");
+  setLinkStatus({ deviceId: "teensy", mode: "demo", detail: "simulated", tone: "ok" });
   ui.connectButton.disabled = false;
   ui.disconnectButton.disabled = true;
 
@@ -638,6 +805,30 @@ function drawMotionGraph() {
   drawSeries(ctx, state.history.az, "#3b82f6", -AXIS_REFERENCE, AXIS_REFERENCE, width, height);
 }
 
+function drawGyroGraph() {
+  if (!ui.gyroCanvas) {
+    return;
+  }
+  const { ctx, width, height } = prepareCanvas2d(ui.gyroCanvas);
+  ctx.clearRect(0, 0, width, height);
+  drawGrid(ctx, width, height, 4);
+  drawSeries(ctx, state.history.gx, "#ef4444", -GYRO_REFERENCE, GYRO_REFERENCE, width, height);
+  drawSeries(ctx, state.history.gy, "#22c55e", -GYRO_REFERENCE, GYRO_REFERENCE, width, height);
+  drawSeries(ctx, state.history.gz, "#3b82f6", -GYRO_REFERENCE, GYRO_REFERENCE, width, height);
+}
+
+function drawMagGraph() {
+  if (!ui.magCanvas) {
+    return;
+  }
+  const { ctx, width, height } = prepareCanvas2d(ui.magCanvas);
+  ctx.clearRect(0, 0, width, height);
+  drawGrid(ctx, width, height, 4);
+  drawSeries(ctx, state.history.mx, "#ef4444", -MAG_REFERENCE, MAG_REFERENCE, width, height);
+  drawSeries(ctx, state.history.my, "#22c55e", -MAG_REFERENCE, MAG_REFERENCE, width, height);
+  drawSeries(ctx, state.history.mz, "#3b82f6", -MAG_REFERENCE, MAG_REFERENCE, width, height);
+}
+
 function piezoGraphMax() {
   let max = 320;
   for (const value of state.history.piezoEnv) {
@@ -713,8 +904,7 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   100,
 );
-// Default view: board Z+ up, board X+ toward you, board Y+ to back-right.
-// Camera at world -X, +Y, +Z (unchanged; board axes remapped in sensorToBoardSample).
+// Bow +X tip → Three +X, bow +Y left → Three -Z, bow +Z up → Three +Y
 const INITIAL_CAMERA_POSITION = new THREE.Vector3(-8, 6.2, 8);
 camera.position.copy(INITIAL_CAMERA_POSITION);
 camera.lookAt(0, 0, 0);
@@ -911,10 +1101,26 @@ function render() {
   controls.update();
   updateThreeObject(state.sample);
   drawMotionGraph();
+  drawGyroGraph();
+  drawMagGraph();
   drawPiezoGraph();
   drawMicGraph();
   renderer.render(scene, camera);
   requestAnimationFrame(render);
+}
+
+function prepareAllCanvases() {
+  prepareCanvas2d(ui.motionCanvas);
+  if (ui.gyroCanvas) {
+    prepareCanvas2d(ui.gyroCanvas);
+  }
+  if (ui.magCanvas) {
+    prepareCanvas2d(ui.magCanvas);
+  }
+  prepareCanvas2d(ui.piezoCanvas);
+  if (ui.micCanvas) {
+    prepareCanvas2d(ui.micCanvas);
+  }
 }
 
 function onResize() {
@@ -923,12 +1129,30 @@ function onResize() {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
-  prepareCanvas2d(ui.motionCanvas);
-  prepareCanvas2d(ui.piezoCanvas);
-  if (ui.micCanvas) {
-    prepareCanvas2d(ui.micCanvas);
-  }
+  prepareAllCanvases();
   fitAppToWindow();
+}
+
+function fitParamStrip() {
+  const strip = document.querySelector("#paramControls");
+  const panel = document.querySelector(".tuning-panel");
+  if (!strip || !panel) {
+    return;
+  }
+  strip.style.transform = "none";
+  strip.style.width = "max-content";
+  const available = panel.clientWidth - 8;
+  const needed = strip.scrollWidth;
+  if (needed > available && available > 0) {
+    const scale = available / needed;
+    strip.style.transform = `scale(${scale})`;
+    strip.style.transformOrigin = "left bottom";
+    strip.style.width = `${needed}px`;
+    strip.style.marginBottom = `${strip.offsetHeight * (scale - 1)}px`;
+  } else {
+    strip.style.width = "100%";
+    strip.style.marginBottom = "0";
+  }
 }
 
 function fitAppToWindow() {
@@ -941,34 +1165,64 @@ function fitAppToWindow() {
   const scaleY = window.innerHeight / shell.scrollHeight;
   const scale = Math.min(1, scaleX, scaleY);
   shell.style.transform = scale < 0.999 ? `scale(${scale})` : "none";
+  fitParamStrip();
 }
 
 window.addEventListener("resize", onResize);
 window.addEventListener("load", () => {
   requestAnimationFrame(fitAppToWindow);
+  const bridgeParam = new URLSearchParams(location.search).get("bridge");
+  if (bridgeParam !== "0") {
+    connectBridge();
+  }
+});
+ui.deviceProfileSelect?.addEventListener("change", () => {
+  const device = getSelectedDeviceProfile();
+  if (ui.bridgeButton) {
+    ui.bridgeButton.textContent = `Bridge · ${device.short}`;
+  }
+  if (!state.port && !state.bridgeSource && !state.demoEnabled) {
+    renderDeviceStatus(device.id, "待機中");
+  }
 });
 ui.connectButton.addEventListener("click", connectSerial);
+if (ui.bridgeButton) {
+  ui.bridgeButton.addEventListener("click", connectBridge);
+}
+if (ui.deviceProfileSelect) {
+  ui.deviceProfileSelect.dispatchEvent(new Event("change"));
+}
 ui.disconnectButton.addEventListener("click", disconnectSerial);
 ui.demoButton.addEventListener("click", () => {
   if (state.demoEnabled) {
     state.demoEnabled = false;
     setStatus("Demo stopped");
+    setLinkStatus({ mode: "none" });
     return;
   }
   startDemo();
 });
 
 function formatParamValue(id, key, value) {
-  if (key === "threshold" && (id === "rotX" || id === "rotZ")) {
-    return value.toFixed(3);
-  }
-  if (key === "threshold" && id === "rotY") {
-    return value.toFixed(2);
-  }
   if (key === "threshold" && (id === "piezo" || id === "mic")) {
+    if (value >= 1000) {
+      return `${(value / 1000).toFixed(1)}k`;
+    }
     return value.toFixed(0);
   }
-  return value.toFixed(2);
+  if (key === "threshold" && (id === "rotX" || id === "rotZ")) {
+    return value.toFixed(2);
+  }
+  if (key === "threshold" && id === "rotY") {
+    return value.toFixed(1);
+  }
+  if (key === "ratio") {
+    return value.toFixed(1);
+  }
+  if (key === "threshold" && id.startsWith("lin")) {
+    return value.toFixed(1);
+  }
+  return value.toFixed(1);
 }
 
 function dialAngleDeg(value, min, max) {
@@ -1010,62 +1264,65 @@ function initParamControls() {
     syncDial(id, key, input, pointer, readout);
   };
 
-  for (const id of PARAM_IDS) {
-    const spec = PARAM_SPEC[id];
-    const color = PARAM_COLORS[id];
-    const group = document.createElement("div");
-    group.className = "param-group";
-    group.style.setProperty("--group-color", color);
+  for (const group of PARAM_GROUPS) {
+    const groupEl = document.createElement("div");
+    groupEl.className = "param-group";
+    groupEl.style.setProperty("--group-color", PARAM_COLORS[group.ids[0]]);
 
     const title = document.createElement("span");
     title.className = "param-group-label";
-    title.textContent = PARAM_SHORT[id];
-    group.appendChild(title);
+    title.textContent = group.label;
+    groupEl.appendChild(title);
 
     const dials = document.createElement("div");
     dials.className = "param-group-dials";
 
-    for (const key of ["threshold", "ratio"]) {
-      const knobSpec = spec[key];
-      const dial = document.createElement("label");
-      dial.className = "param-dial";
-      dial.style.setProperty("--dial-color", color);
-      dial.title = `${spec.label} ${key}`;
+    for (const id of group.ids) {
+      const spec = PARAM_SPEC[id];
+      const color = PARAM_COLORS[id];
 
-      const keyLabel = document.createElement("span");
-      keyLabel.className = "param-dial-key";
-      keyLabel.textContent = key === "threshold" ? "Th" : "Ratio";
+      for (const key of ["threshold", "ratio"]) {
+        const knobSpec = spec[key];
+        const dial = document.createElement("label");
+        dial.className = "param-dial";
+        dial.style.setProperty("--dial-color", color);
+        dial.title = `${spec.label} ${key}`;
 
-      const ring = document.createElement("div");
-      ring.className = "param-dial-ring";
+        const keyLabel = document.createElement("span");
+        keyLabel.className = "param-dial-key";
+        keyLabel.textContent = key === "threshold" ? PARAM_SHORT[id] : "R";
 
-      const pointer = document.createElement("div");
-      pointer.className = "param-dial-pointer";
+        const ring = document.createElement("div");
+        ring.className = "param-dial-ring";
 
-      const input = document.createElement("input");
-      input.type = "range";
-      input.className = "param-dial-input";
-      input.min = String(knobSpec.min);
-      input.max = String(knobSpec.max);
-      input.step = String(knobSpec.step);
-      input.value = String(state.params[id][key]);
-      input.dataset.paramId = id;
-      input.dataset.paramKey = key;
+        const pointer = document.createElement("div");
+        pointer.className = "param-dial-pointer";
 
-      const readout = document.createElement("output");
-      readout.className = "param-dial-value";
+        const input = document.createElement("input");
+        input.type = "range";
+        input.className = "param-dial-input";
+        input.min = String(knobSpec.min);
+        input.max = String(knobSpec.max);
+        input.step = String(knobSpec.step);
+        input.value = String(state.params[id][key]);
+        input.dataset.paramId = id;
+        input.dataset.paramKey = key;
 
-      ring.appendChild(pointer);
-      dial.appendChild(input);
-      dial.appendChild(ring);
-      dial.appendChild(keyLabel);
-      dial.appendChild(readout);
-      dials.appendChild(dial);
-      bindDial(id, key, input, pointer, readout);
+        const readout = document.createElement("output");
+        readout.className = "param-dial-value";
+
+        ring.appendChild(pointer);
+        dial.appendChild(input);
+        dial.appendChild(ring);
+        dial.appendChild(keyLabel);
+        dial.appendChild(readout);
+        dials.appendChild(dial);
+        bindDial(id, key, input, pointer, readout);
+      }
     }
 
-    group.appendChild(dials);
-    root.appendChild(group);
+    groupEl.appendChild(dials);
+    root.appendChild(groupEl);
   }
 
   document.querySelector("#paramResetButton")?.addEventListener("click", () => {
@@ -1089,9 +1346,11 @@ function initParamControls() {
   });
 
   refreshExport();
+  requestAnimationFrame(fitParamStrip);
 }
 
 setBrowserStatus();
+setLinkStatus({ mode: "none" });
 initParamControls();
 updateText(state.sample);
 onResize();
