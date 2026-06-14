@@ -1,14 +1,15 @@
 /**
- * Teensy 4.1 — ICM-20948 + USB Audio stereo (piezo L / mic R) + Serial telemetry.
+ * Teensy 4.1 — MPU6050 + USB Audio stereo (piezo L / mic R) + Serial telemetry.
  *
- * T4.1: AudioInputAnalogStereo is a stub. Use AudioInputAnalog (ADC2, A0) + AudioInputMicAdc1 (ADC1, A1).
+ * T4.1: AudioInputAnalog (ADC2, A0) + AudioInputMicAdc1 (ADC1, A1).
+ * Mag/heading columns stay in DATA (zeros) for M4L/visualizer compatibility.
  */
 
 #include <Arduino.h>
 #include <Audio.h>
 #include <Wire.h>
-#include <SPI.h>
-#include "ICM_20948.h"
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 #include "audio_input_mic_adc1.h"
 #include "bow_frame.h"
 
@@ -18,8 +19,6 @@ constexpr uint8_t kMicPin = A1;
 constexpr uint32_t kSerialBaud = 115200;
 constexpr uint32_t kImuIntervalMs = 10;
 constexpr uint32_t kPrintIntervalMs = 50;
-constexpr float kMgToMetersPerSecondSquared = 0.00980665f;
-constexpr float kDegToRad = 0.01745329252f;
 
 constexpr float kPiezoAlpha = 0.10f;
 constexpr float kPiezoPeakDecay = 0.96f;
@@ -39,7 +38,7 @@ AudioConnection patchMicToUsbRight(micInput, 0, usbOutput, 1);
 AudioConnection patchPiezoToAnalyzer(piezoInput, 0, piezoPeakAnalyzer, 0);
 AudioConnection patchMicToAnalyzer(micInput, 0, micPeakAnalyzer, 0);
 
-ICM_20948_I2C gImu;
+Adafruit_MPU6050 gMpu;
 bool gImuReady = false;
 
 float gAx = 0.0f;
@@ -67,6 +66,7 @@ float gMicEnv = 0.0f;
 
 uint32_t gLastImuMs = 0;
 uint32_t gLastPrintMs = 0;
+uint32_t gLastImuWarnMs = 0;
 
 float magnitude3(float x, float y, float z) {
   return sqrtf((x * x) + (y * y) + (z * z));
@@ -95,49 +95,59 @@ void scanI2c() {
   Serial.println();
 }
 
-bool beginIcmWithAd0(uint8_t ad0) {
-  gImu.begin(Wire, ad0);
-  Serial.printf("ICM-20948 begin AD0=%u: %s\n", ad0, gImu.statusString());
-  return gImu.status == ICM_20948_Stat_Ok;
+bool beginMpuAt(uint8_t address) {
+  if (!gMpu.begin(address, &Wire)) {
+    Serial.printf("MPU6050 begin 0x%02X: FAILED\n", address);
+    return false;
+  }
+  Serial.printf("MPU6050 begin 0x%02X: OK\n", address);
+  return true;
 }
 
 void initImu() {
   scanI2c();
-  gImuReady = beginIcmWithAd0(0);
+  gImuReady = beginMpuAt(0x68);
   if (!gImuReady) {
-    gImuReady = beginIcmWithAd0(1);
+    gImuReady = beginMpuAt(0x69);
   }
   if (!gImuReady) {
-    Serial.println("ICM-20948 init: FAILED (check 3.3V, GND, SDA=18, SCL=19, address 0x68/0x69)");
+    Serial.println("MPU6050 init: FAILED (check 3.3V, GND, SDA=18, SCL=19, AD0)");
     return;
   }
-  Serial.println("ICM-20948 init: OK");
+
+  gMpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+  gMpu.setGyroRange(MPU6050_RANGE_500_DEG);
+  gMpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
+  Serial.println("MPU6050 ranges: accel +/-4g, gyro +/-500dps, LPF 44Hz");
 }
 
 void sampleImu() {
-  if (!gImuReady || !gImu.dataReady()) {
+  if (!gImuReady) {
     return;
   }
 
-  gImu.getAGMT();
-  const float rawAx = gImu.accX() * kMgToMetersPerSecondSquared;
-  const float rawAy = gImu.accY() * kMgToMetersPerSecondSquared;
-  const float rawAz = gImu.accZ() * kMgToMetersPerSecondSquared;
-  const float rawGx = gImu.gyrX() * kDegToRad;
-  const float rawGy = gImu.gyrY() * kDegToRad;
-  const float rawGz = gImu.gyrZ() * kDegToRad;
-  const float rawMx = gImu.magX();
-  const float rawMy = gImu.magY();
-  const float rawMz = gImu.magZ();
+  sensors_event_t accel;
+  sensors_event_t gyro;
+  sensors_event_t temp;
+  gMpu.getEvent(&accel, &gyro, &temp);
+
+  const float rawAx = accel.acceleration.x;
+  const float rawAy = accel.acceleration.y;
+  const float rawAz = accel.acceleration.z;
+  const float rawGx = gyro.gyro.x;
+  const float rawGy = gyro.gyro.y;
+  const float rawGz = gyro.gyro.z;
 
   applyBowFrame(rawAx, rawAy, rawAz, gAx, gAy, gAz);
   applyBowFrame(rawGx, rawGy, rawGz, gGx, gGy, gGz);
-  applyBowFrame(rawMx, rawMy, rawMz, gMx, gMy, gMz);
 
+  gMx = 0.0f;
+  gMy = 0.0f;
+  gMz = 0.0f;
   gAccelMag = magnitude3(gAx, gAy, gAz);
   gGyroMag = magnitude3(gGx, gGy, gGz);
-  gMagMag = magnitude3(gMx, gMy, gMz);
-  gHeadingDeg = bowHeadingDegrees(gMx, gMy, gMz, gAx, gAy, gAz);
+  gMagMag = 0.0f;
+  gHeadingDeg = 0.0f;
 }
 
 void updatePiezoTelemetry() {
@@ -166,6 +176,7 @@ void updateMicTelemetry() {
 void printHeader() {
   Serial.println();
   Serial.println("=== Human Instrument — Teensy stereo USB Audio ===");
+  Serial.println("IMU: MPU6050 (6-axis) | SDA=18 SCL=19 | mag/heading=0");
   Serial.println("USB L=piezo(A0/ADC2) R=mic(A1/ADC1) @ 44.1kHz");
   Serial.println("Bow frame: +X=tip +Y=left +Z=up | map Ys->Xb Zs->Yb -Xs->Zb");
   Serial.println(
@@ -209,6 +220,10 @@ void loop() {
 
   if (now - gLastPrintMs >= kPrintIntervalMs) {
     gLastPrintMs = now;
+    if (!gImuReady && now - gLastImuWarnMs >= 5000) {
+      gLastImuWarnMs = now;
+      Serial.println("WARN,IMU,MPU6050 not ready (check 3.3V SDA=18 SCL=19 AD0->GND)");
+    }
     printData();
   }
 }

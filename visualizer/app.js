@@ -17,13 +17,14 @@ import {
   serializeForMax,
 } from "./params.js";
 import { createSerialFrameParser } from "./camera.js";
+import { createMotionState, processM4lMotion } from "./motion_core.js";
 
 const GRAPH_SIZE = 240;
 const PIEZO_REFERENCE_MAX = 2400;
 const MIC_REFERENCE_MAX = 3000;
-const AXIS_REFERENCE = 12.0;
-const GYRO_REFERENCE = 0.35;
-const MAG_REFERENCE = 120.0;
+const PITCH_ROLL_REFERENCE = 1.2;
+const YAW_RATE_REFERENCE = 0.35;
+const LINEAR_REFERENCE = 2.2;
 const GRAVITY_MS2 = 9.81;
 const STILL_GYRO_RAD = 0.1;
 const GRAVITY_LP_ALPHA = 0.07;
@@ -68,7 +69,7 @@ function sensorToBoardSample(sample) {
   };
 }
 
-const BRIDGE_STREAM_URL = "http://127.0.0.1:8765/stream";
+const BRIDGE_STREAM_URL = `${location.protocol}//${location.hostname}:8765/stream`;
 
 const DEVICE_PROFILES = {
   teensy: {
@@ -101,6 +102,8 @@ const ui = {
   motionCanvas: document.querySelector("#motionCanvas"),
   gyroCanvas: document.querySelector("#gyroCanvas"),
   magCanvas: document.querySelector("#magCanvas"),
+  magnitudeCanvas: document.querySelector("#magnitudeCanvas"),
+  orientationHud: document.querySelector("#orientationHud"),
   piezoCanvas: document.querySelector("#piezoCanvas"),
   micCanvas: document.querySelector("#micCanvas"),
 };
@@ -172,30 +175,31 @@ const state = {
     micEnv: 0,
   },
   history: {
-    ax: Array(GRAPH_SIZE).fill(0),
-    ay: Array(GRAPH_SIZE).fill(0),
-    az: Array(GRAPH_SIZE).fill(0),
-    gx: Array(GRAPH_SIZE).fill(0),
-    gy: Array(GRAPH_SIZE).fill(0),
-    gz: Array(GRAPH_SIZE).fill(0),
-    mx: Array(GRAPH_SIZE).fill(0),
-    my: Array(GRAPH_SIZE).fill(0),
-    mz: Array(GRAPH_SIZE).fill(0),
+    pitch: Array(GRAPH_SIZE).fill(0),
+    roll: Array(GRAPH_SIZE).fill(0),
+    yaw: Array(GRAPH_SIZE).fill(0),
+    yawRate: Array(GRAPH_SIZE).fill(0),
+    lx: Array(GRAPH_SIZE).fill(0),
+    ly: Array(GRAPH_SIZE).fill(0),
+    lz: Array(GRAPH_SIZE).fill(0),
+    gyroMag: Array(GRAPH_SIZE).fill(0),
+    linMag: Array(GRAPH_SIZE).fill(0),
+    gyroOnset: Array(GRAPH_SIZE).fill(0),
+    linOnset: Array(GRAPH_SIZE).fill(0),
     piezoEnv: Array(GRAPH_SIZE).fill(0),
     piezoPeak: Array(GRAPH_SIZE).fill(0),
     piezoHit: Array(GRAPH_SIZE).fill(0),
     micEnv: Array(GRAPH_SIZE).fill(0),
   },
   motion: {
-    yaw: 0,
-    gravityLp: { x: 0, y: 0, z: GRAVITY_MS2 },
-    gravityLpReady: false,
-    smoothLinear: { lx: 0, ly: 0, lz: 0 },
-    lastMs: 0,
+    ...createMotionState(),
+    lastFrameAt: 0,
+    lastBoxHalf: null,
     boxSignature: "",
   },
   params: loadParams(),
   serialFrameParser: null,
+  needsGraphRedraw: true,
 };
 
 
@@ -222,12 +226,12 @@ function clamp(value, min, max) {
 }
 
 function resetMotionState() {
-  state.motion.yaw = 0;
-  state.motion.gravityLp = { x: 0, y: 0, z: GRAVITY_MS2 };
-  state.motion.gravityLpReady = false;
-  state.motion.smoothLinear = { lx: 0, ly: 0, lz: 0 };
-  state.motion.lastMs = 0;
-  state.motion.boxSignature = "";
+  const keepBox = {
+    lastFrameAt: state.motion.lastFrameAt,
+    lastBoxHalf: state.motion.lastBoxHalf,
+    boxSignature: state.motion.boxSignature,
+  };
+  Object.assign(state.motion, createMotionState(), keepBox);
 }
 
 function accelTilt(sample) {
@@ -265,17 +269,29 @@ function linearResponseScale(sample) {
   );
 }
 
-function motionDeltaSeconds(sample) {
+function packetDeltaSeconds(sample) {
   const ms = sample.ms || 0;
-  let dt = 0.02;
-  if (state.motion.lastMs > 0 && ms > state.motion.lastMs) {
-    dt = (ms - state.motion.lastMs) / 1000;
-    dt = clamp(dt, 0.001, 0.08);
+  let dt = 0.05;
+  if (state.motion.lastSampleMs > 0 && ms > state.motion.lastSampleMs) {
+    dt = (ms - state.motion.lastSampleMs) / 1000;
+    dt = clamp(dt, 0.001, 0.2);
   }
   if (ms > 0) {
-    state.motion.lastMs = ms;
+    state.motion.lastSampleMs = ms;
   }
   return dt;
+}
+
+function frameDeltaSeconds() {
+  const now = performance.now();
+  const lastFrameAt = state.motion.lastFrameAt || now;
+  state.motion.lastFrameAt = now;
+  return clamp((now - lastFrameAt) / 1000, 0.001, 0.05);
+}
+
+function processMotionSample(sample) {
+  packetDeltaSeconds(sample);
+  state.motion.lastBoxHalf = boxHalfExtents(sample);
 }
 
 function linearAcceleration(sample) {
@@ -327,17 +343,47 @@ function axisSignedGrowth(linearComponent, axisParam) {
   };
 }
 
+function computeYawRate(sample) {
+  const gravityMag = Math.hypot(sample.ax, sample.ay, sample.az) || GRAVITY_MS2;
+  const ux = sample.ax / gravityMag;
+  const uy = sample.ay / gravityMag;
+  const uz = sample.az / gravityMag;
+  return sample.gx * ux + sample.gy * uy + sample.gz * uz;
+}
+
+function enrichM4lSample(sample) {
+  return {
+    ...sample,
+    ...processM4lMotion(sample, state.params, state.motion, { integrateYaw: false }),
+  };
+}
+
+function formatOrientationDeg(rad) {
+  return `${THREE.MathUtils.radToDeg(rad).toFixed(1)}°`;
+}
+
+function updateOrientationHud({ pitch, roll, yaw, yawRate, gyroOnset, linOnset }) {
+  if (!ui.orientationHud) {
+    return;
+  }
+  const gOn = gyroOnset ? "●" : "○";
+  const lOn = linOnset ? "●" : "○";
+  ui.orientationHud.innerHTML = `
+    <span class="ori-pitch">Pitch <b>${formatOrientationDeg(pitch)}</b></span>
+    <span class="ori-roll">Roll <b>${formatOrientationDeg(roll)}</b></span>
+    <span class="ori-yaw">Yaw <b>${formatOrientationDeg(yaw)}</b> · ${yawRate.toFixed(3)} rad/s</span>
+    <span class="ori-onset gyro-onset">gOn ${gOn}</span>
+    <span class="ori-onset lin-onset">lOn ${lOn}</span>
+  `;
+}
+
 function integrateYaw(sample, dt) {
   if ((sample.magMag ?? 0) > 1 && Number.isFinite(sample.headingDeg)) {
     state.motion.yaw = THREE.MathUtils.degToRad(sample.headingDeg);
     return;
   }
 
-  const gravityMag = Math.hypot(sample.ax, sample.ay, sample.az) || GRAVITY_MS2;
-  const ux = sample.ax / gravityMag;
-  const uy = sample.ay / gravityMag;
-  const uz = sample.az / gravityMag;
-  const yawRate = sample.gx * ux + sample.gy * uy + sample.gz * uz;
+  const yawRate = computeYawRate(sample);
   const { threshold, ratio } = state.params.rotY;
   if (Math.abs(yawRate) <= threshold) {
     return;
@@ -373,6 +419,7 @@ function pushHistory(sample) {
       series.shift();
     }
   }
+  state.needsGraphRedraw = true;
 }
 
 function updateText(sample) {
@@ -493,7 +540,8 @@ function consumeLine(rawLine) {
 
   const board = sensorToBoardSample(parsed);
   state.sample = board;
-  pushHistory(board);
+  processMotionSample(board);
+  pushHistory(enrichM4lSample(board));
   updateText(board);
 }
 
@@ -742,7 +790,8 @@ function startDemo() {
       `DEMO ax=${sample.ax.toFixed(2)} ay=${sample.ay.toFixed(2)} az=${sample.az.toFixed(2)} piezoEnv=${sample.piezoEnv.toFixed(1)}`;
     state.lineType = "DEMO";
     state.sample = sample;
-    pushHistory(sample);
+    processMotionSample(sample);
+    pushHistory(enrichM4lSample(sample));
     updateText(sample);
     requestAnimationFrame(tick);
   };
@@ -750,16 +799,86 @@ function startDemo() {
   tick();
 }
 
-function drawGrid(ctx, width, height, horizontalLines) {
+const GRAPH_AXIS_WIDTH = 40;
+
+function formatScaleValue(value) {
+  const abs = Math.abs(value);
+  if (abs >= 1000) {
+    return value.toFixed(0);
+  }
+  if (abs >= 100) {
+    return value.toFixed(0);
+  }
+  if (abs >= 10) {
+    return value.toFixed(1);
+  }
+  if (abs >= 1) {
+    return value.toFixed(2);
+  }
+  if (abs >= 0.01) {
+    return value.toFixed(3);
+  }
+  return value.toFixed(4);
+}
+
+function plotArea(width, height) {
+  return {
+    left: GRAPH_AXIS_WIDTH,
+    top: 4,
+    width: Math.max(1, width - GRAPH_AXIS_WIDTH - 4),
+    height: Math.max(1, height - 8),
+  };
+}
+
+function drawYAxisScale(ctx, area, min, max, { variable = false, unit = "" } = {}) {
+  const suffix = unit ? ` ${unit}` : "";
+  const labels = variable
+    ? [
+        { value: max, y: area.top + 6, prefix: "↑ " },
+        { value: (max + min) / 2, y: area.top + area.height / 2, prefix: "" },
+        { value: min, y: area.top + area.height - 6, prefix: "" },
+      ]
+    : [
+        { value: max, y: area.top + 6, prefix: "" },
+        { value: (max + min) / 2, y: area.top + area.height / 2, prefix: "" },
+        { value: min, y: area.top + area.height - 6, prefix: "" },
+      ];
+
+  ctx.save();
+  ctx.fillStyle = "rgba(255, 255, 255, 0.46)";
+  ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  ctx.textAlign = "right";
+  labels.forEach(({ value, y, prefix }) => {
+    ctx.textBaseline = y <= area.top + 8 ? "top" : y >= area.top + area.height - 8 ? "bottom" : "middle";
+    ctx.fillText(`${prefix}${formatScaleValue(value)}${suffix}`, area.left - 4, y);
+  });
+  ctx.restore();
+}
+
+function drawGrid(ctx, area, horizontalLines) {
   ctx.strokeStyle = "rgba(255,255,255,0.08)";
   ctx.lineWidth = 1;
   for (let i = 0; i <= horizontalLines; i += 1) {
-    const y = (height / horizontalLines) * i;
+    const y = area.top + (area.height / horizontalLines) * i;
     ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
+    ctx.moveTo(area.left, y);
+    ctx.lineTo(area.left + area.width, y);
     ctx.stroke();
   }
+}
+
+function drawZeroLine(ctx, area, min, max) {
+  if (min >= 0 || max <= 0) {
+    return;
+  }
+  const normalized = (0 - min) / (max - min || 1);
+  const y = area.top + area.height - normalized * area.height;
+  ctx.strokeStyle = "rgba(255,255,255,0.14)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(area.left, y);
+  ctx.lineTo(area.left + area.width, y);
+  ctx.stroke();
 }
 
 function prepareCanvas2d(canvas) {
@@ -778,7 +897,7 @@ function prepareCanvas2d(canvas) {
   return { ctx, width, height };
 }
 
-function drawSeries(ctx, data, color, min, max, width, height) {
+function drawSeries(ctx, data, color, min, max, area) {
   if (data.length < 2) {
     return;
   }
@@ -787,9 +906,9 @@ function drawSeries(ctx, data, color, min, max, width, height) {
   ctx.beginPath();
 
   data.forEach((value, index) => {
-    const x = (index / (data.length - 1)) * width;
+    const x = area.left + (index / (data.length - 1)) * area.width;
     const normalized = (value - min) / (max - min || 1);
-    const y = height - normalized * height;
+    const y = area.top + area.height - normalized * area.height;
     if (index === 0) {
       ctx.moveTo(x, y);
     } else {
@@ -800,57 +919,158 @@ function drawSeries(ctx, data, color, min, max, width, height) {
   ctx.stroke();
 }
 
-function drawMotionGraph() {
-  const { ctx, width, height } = prepareCanvas2d(ui.motionCanvas);
-  ctx.clearRect(0, 0, width, height);
-  drawGrid(ctx, width, height, 4);
-  drawSeries(ctx, state.history.ax, "#ef4444", -AXIS_REFERENCE, AXIS_REFERENCE, width, height);
-  drawSeries(ctx, state.history.ay, "#22c55e", -AXIS_REFERENCE, AXIS_REFERENCE, width, height);
-  drawSeries(ctx, state.history.az, "#3b82f6", -AXIS_REFERENCE, AXIS_REFERENCE, width, height);
+function yawGraphRange() {
+  let min = -Math.PI;
+  let max = Math.PI;
+  for (const value of state.history.yaw) {
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  const pad = Math.max(0.25, (max - min) * 0.08);
+  return { min: min - pad, max: max + pad };
 }
 
-function drawGyroGraph() {
+function magnitudeGraphMax() {
+  let max = 0.05;
+  for (const value of state.history.gyroMag) {
+    max = Math.max(max, value);
+  }
+  for (const value of state.history.linMag) {
+    max = Math.max(max, value);
+  }
+  if (max < 8) {
+    return Math.max(max * 2.5, 5);
+  }
+  if (max < 80) {
+    return Math.max(max * 1.5, 40);
+  }
+  return Math.max(max * 1.08, 400);
+}
+
+function drawPitchRollGraph() {
+  const { ctx, width, height } = prepareCanvas2d(ui.motionCanvas);
+  const area = plotArea(width, height);
+  const min = -PITCH_ROLL_REFERENCE;
+  const max = PITCH_ROLL_REFERENCE;
+  ctx.clearRect(0, 0, width, height);
+  drawYAxisScale(ctx, area, min, max, { unit: "rad" });
+  drawGrid(ctx, area, 4);
+  drawZeroLine(ctx, area, min, max);
+  drawSeries(ctx, state.history.pitch, "#ef4444", min, max, area);
+  drawSeries(ctx, state.history.roll, "#22c55e", min, max, area);
+}
+
+function drawYawGraph() {
   if (!ui.gyroCanvas) {
     return;
   }
   const { ctx, width, height } = prepareCanvas2d(ui.gyroCanvas);
+  const area = plotArea(width, height);
+  const yawRange = yawGraphRange();
+  const rateMin = -YAW_RATE_REFERENCE;
+  const rateMax = YAW_RATE_REFERENCE;
   ctx.clearRect(0, 0, width, height);
-  drawGrid(ctx, width, height, 4);
-  drawSeries(ctx, state.history.gx, "#ef4444", -GYRO_REFERENCE, GYRO_REFERENCE, width, height);
-  drawSeries(ctx, state.history.gy, "#22c55e", -GYRO_REFERENCE, GYRO_REFERENCE, width, height);
-  drawSeries(ctx, state.history.gz, "#3b82f6", -GYRO_REFERENCE, GYRO_REFERENCE, width, height);
+  drawYAxisScale(ctx, area, yawRange.min, yawRange.max, { unit: "rad" });
+  drawGrid(ctx, area, 4);
+  drawZeroLine(ctx, area, yawRange.min, yawRange.max);
+  drawSeries(ctx, state.history.yaw, "#3b82f6", yawRange.min, yawRange.max, area);
+  drawSeries(ctx, state.history.yawRate, "#fb923c", rateMin, rateMax, area);
 }
 
-function drawMagGraph() {
+function drawLinearGraph() {
   if (!ui.magCanvas) {
     return;
   }
   const { ctx, width, height } = prepareCanvas2d(ui.magCanvas);
+  const area = plotArea(width, height);
+  const min = -LINEAR_REFERENCE;
+  const max = LINEAR_REFERENCE;
   ctx.clearRect(0, 0, width, height);
-  drawGrid(ctx, width, height, 4);
-  drawSeries(ctx, state.history.mx, "#ef4444", -MAG_REFERENCE, MAG_REFERENCE, width, height);
-  drawSeries(ctx, state.history.my, "#22c55e", -MAG_REFERENCE, MAG_REFERENCE, width, height);
-  drawSeries(ctx, state.history.mz, "#3b82f6", -MAG_REFERENCE, MAG_REFERENCE, width, height);
+  drawYAxisScale(ctx, area, min, max, { unit: "m/s²" });
+  drawGrid(ctx, area, 4);
+  drawZeroLine(ctx, area, min, max);
+  drawSeries(ctx, state.history.lx, "#ef4444", min, max, area);
+  drawSeries(ctx, state.history.ly, "#22c55e", min, max, area);
+  drawSeries(ctx, state.history.lz, "#3b82f6", min, max, area);
+}
+
+function drawThresholdLine(ctx, area, min, max, value, color, alpha = 0.4) {
+  if (value <= min || value >= max) {
+    return;
+  }
+  const normalized = (value - min) / (max - min || 1);
+  const y = area.top + area.height - normalized * area.height;
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = alpha;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(area.left, y);
+  ctx.lineTo(area.left + area.width, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+}
+
+function drawOnsetTicks(ctx, data, area, color, laneOffset = 0) {
+  if (data.length < 2) {
+    return;
+  }
+  ctx.fillStyle = color;
+  data.forEach((value, index) => {
+    if (value < 1) {
+      return;
+    }
+    const x = area.left + (index / (data.length - 1)) * area.width;
+    ctx.fillRect(x - 1, area.top + area.height - 9 - laneOffset, 2, 7);
+  });
+}
+
+function drawMagnitudeGraph() {
+  if (!ui.magnitudeCanvas) {
+    return;
+  }
+  const { ctx, width, height } = prepareCanvas2d(ui.magnitudeCanvas);
+  const area = plotArea(width, height);
+  const max = magnitudeGraphMax();
+  const gyroTh = state.params.gyroOnset.threshold;
+  const linTh = state.params.linOnset.threshold;
+  ctx.clearRect(0, 0, width, height);
+  drawYAxisScale(ctx, area, 0, max, { variable: true });
+  drawGrid(ctx, area, 4);
+  drawThresholdLine(ctx, area, 0, max, gyroTh, "#fb923c");
+  drawThresholdLine(ctx, area, 0, max, linTh, "#22d3ee");
+  drawSeries(ctx, state.history.gyroMag, "#fb923c", 0, max, area);
+  drawSeries(ctx, state.history.linMag, "#22d3ee", 0, max, area);
+  drawOnsetTicks(ctx, state.history.gyroOnset, area, "rgba(251, 146, 60, 0.9)", 0);
+  drawOnsetTicks(ctx, state.history.linOnset, area, "rgba(34, 211, 238, 0.9)", 10);
 }
 
 function piezoGraphMax() {
-  let max = 320;
+  let max = 0;
   for (const value of state.history.piezoEnv) {
     max = Math.max(max, value);
   }
   for (const value of state.history.piezoPeak) {
     max = Math.max(max, value);
   }
+  if (max < 8) {
+    return Math.max(max * 2.5, 5);
+  }
+  if (max < 80) {
+    return Math.max(max * 1.5, 40);
+  }
   return Math.max(max * 1.08, 400);
 }
 
 function drawPiezoGraph() {
   const { ctx, width, height } = prepareCanvas2d(ui.piezoCanvas);
+  const area = plotArea(width, height);
   const max = piezoGraphMax();
   ctx.clearRect(0, 0, width, height);
-  drawGrid(ctx, width, height, 4);
-  drawSeries(ctx, state.history.piezoEnv, "#22d3ee", 0, max, width, height);
-  drawSeries(ctx, state.history.piezoPeak, "#fb923c", 0, max, width, height);
+  drawYAxisScale(ctx, area, 0, max, { variable: true });
+  drawGrid(ctx, area, 4);
+  drawSeries(ctx, state.history.piezoEnv, "#22d3ee", 0, max, area);
+  drawSeries(ctx, state.history.piezoPeak, "#fb923c", 0, max, area);
 
   if (state.history.piezoHit.length < 2) {
     return;
@@ -860,22 +1080,23 @@ function drawPiezoGraph() {
     if (value < 1) {
       return;
     }
-    const x = (index / (state.history.piezoHit.length - 1)) * width;
-    ctx.fillRect(x - 1, height - 7, 2, 7);
+    const x = area.left + (index / (state.history.piezoHit.length - 1)) * area.width;
+    ctx.fillRect(x - 1, area.top + area.height - 7, 2, 7);
   });
 }
 
 function micGraphMax() {
-  let max = 400;
+  let max = 0;
   for (const value of state.history.micEnv) {
     max = Math.max(max, value);
   }
-  const scaled = applyThresholdRatioUnsigned(
-    max,
-    state.params.mic?.threshold ?? 80,
-    state.params.mic?.ratio ?? 1,
-  );
-  return Math.max(scaled * 1.08, MIC_REFERENCE_MAX * 0.15, 400);
+  if (max < 8) {
+    return Math.max(max * 2.5, 5);
+  }
+  if (max < 80) {
+    return Math.max(max * 1.5, 40);
+  }
+  return Math.max(max * 1.08, 400);
 }
 
 function drawMicGraph() {
@@ -883,13 +1104,12 @@ function drawMicGraph() {
     return;
   }
   const { ctx, width, height } = prepareCanvas2d(ui.micCanvas);
+  const area = plotArea(width, height);
   const max = micGraphMax();
   ctx.clearRect(0, 0, width, height);
-  drawGrid(ctx, width, height, 4);
-  const scaledHistory = state.history.micEnv.map((value) =>
-    applyThresholdRatioUnsigned(value, state.params.mic.threshold, state.params.mic.ratio),
-  );
-  drawSeries(ctx, scaledHistory, "#a78bfa", 0, max, width, height);
+  drawYAxisScale(ctx, area, 0, max, { variable: true });
+  drawGrid(ctx, area, 4);
+  drawSeries(ctx, state.history.micEnv, "#a78bfa", 0, max, area);
 }
 
 const threeContainer = document.querySelector("#threeContainer");
@@ -1119,8 +1339,8 @@ function applyAsymmetricBox(half) {
 }
 
 function updateThreeObject(sample) {
-  const dt = motionDeltaSeconds(sample);
-  integrateYaw(sample, dt);
+  const frameDt = frameDeltaSeconds();
+  integrateYaw(sample, frameDt);
 
   const { pitch, roll } = accelTilt(sample);
   const p = state.params;
@@ -1129,7 +1349,16 @@ function updateThreeObject(sample) {
   cubeGroup.rotation.order = "YXZ";
   cubeGroup.rotation.set(pitchOut, state.motion.yaw, rollOut);
 
-  applyAsymmetricBox(boxHalfExtents(sample));
+  updateOrientationHud({
+    pitch,
+    roll,
+    yaw: state.motion.yaw,
+    yawRate: computeYawRate(sample),
+    gyroOnset: state.sample.gyroOnset,
+    linOnset: state.sample.linOnset,
+  });
+
+  applyAsymmetricBox(state.motion.lastBoxHalf ?? boxHalfExtents(sample));
 
   const piezoScaled = applyThresholdRatioUnsigned(
     sample.piezoEnv,
@@ -1145,11 +1374,15 @@ function updateThreeObject(sample) {
 function render() {
   controls.update();
   updateThreeObject(state.sample);
-  drawMotionGraph();
-  drawGyroGraph();
-  drawMagGraph();
-  drawPiezoGraph();
-  drawMicGraph();
+  if (state.needsGraphRedraw) {
+    drawPitchRollGraph();
+    drawYawGraph();
+    drawLinearGraph();
+    drawMagnitudeGraph();
+    drawPiezoGraph();
+    drawMicGraph();
+    state.needsGraphRedraw = false;
+  }
   renderer.render(scene, camera);
   requestAnimationFrame(render);
 }
@@ -1161,6 +1394,9 @@ function prepareAllCanvases() {
   }
   if (ui.magCanvas) {
     prepareCanvas2d(ui.magCanvas);
+  }
+  if (ui.magnitudeCanvas) {
+    prepareCanvas2d(ui.magnitudeCanvas);
   }
   prepareCanvas2d(ui.piezoCanvas);
   if (ui.micCanvas) {
@@ -1176,6 +1412,7 @@ function onResize() {
   renderer.setSize(width, height);
   updateEdgeLineResolution();
   prepareAllCanvases();
+  state.needsGraphRedraw = true;
   fitAppToWindow();
 }
 
@@ -1288,6 +1525,12 @@ function formatParamValue(id, key, value) {
   if (key === "threshold" && id === "rotY") {
     return value.toFixed(1);
   }
+  if (key === "threshold" && (id === "gyroOnset" || id === "linOnset")) {
+    return value.toFixed(2);
+  }
+  if (key === "ratio" && (id === "gyroOnset" || id === "linOnset")) {
+    return value.toFixed(2);
+  }
   if (key === "ratio") {
     return value.toFixed(1);
   }
@@ -1331,6 +1574,9 @@ function initParamControls() {
       syncDial(id, key, input, pointer, readout);
       saveParams(state.params);
       refreshExport();
+      if (id === "gyroOnset" || id === "linOnset") {
+        state.needsGraphRedraw = true;
+      }
     });
     dialRefs.push({ id, key, input, pointer, readout });
     syncDial(id, key, input, pointer, readout);
@@ -1362,7 +1608,12 @@ function initParamControls() {
 
         const keyLabel = document.createElement("span");
         keyLabel.className = "param-dial-key";
-        keyLabel.textContent = key === "threshold" ? PARAM_SHORT[id] : "R";
+        keyLabel.textContent =
+          key === "threshold"
+            ? PARAM_SHORT[id]
+            : id === "gyroOnset" || id === "linOnset"
+              ? "Ra"
+              : "R";
 
         const ring = document.createElement("div");
         ring.className = "param-dial-ring";

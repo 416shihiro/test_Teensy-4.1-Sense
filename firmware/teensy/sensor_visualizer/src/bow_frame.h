@@ -1,23 +1,16 @@
 #pragma once
 
 /**
- * ICM-20948 chip frame → Bow frame (Human Instrument).
+ * Sensor chip frame → Bow frame (Human Instrument).
  *
- * Mount (user, 2026-06-17):
- * - Chip package top (+Z_icm) points toward the bow tip.
- * - Looking from frog toward tip: silkscreen / marking at front-left.
+ * Calibrated on ICM-20948 mount (2026-06-17b). Reused for MPU6050 when the
+ * breakout is mounted the same way on the bow (chip axes aligned to bow tip/left/up).
  *
- * Empirical calibration (2026-06-17b):
- * - Horizontal rest + heading: prior Zb=-Xs mapping kept gravity on bow +Z.
- * - Pitch (tip up/down, ω about bow Y) couples to sensor Z, not Y.
- * - Roll (spin about stick, ω about bow X) couples to sensor Y, not Z.
+ * Mount intent:
+ * - Package top (+Z_sensor) toward bow tip
+ * - Frog→tip view: marking at front-left
  *
- * Bow frame (right-handed):
- * - +X: toward bow tip
- * - +Y: left when viewing frog → tip
- * - +Z: up (sky)
- *
- * Rotation (sensor s → bow b):
+ * Bow frame: +X tip, +Y left, +Z up
  *   Xb = Ys   (roll about tip)
  *   Yb = Zs   (pitch)
  *   Zb = -Xs  (up / gravity when level)

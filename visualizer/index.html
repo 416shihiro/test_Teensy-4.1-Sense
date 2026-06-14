@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SHIHIRO Human Inst Sensor Viz ver.20260617a</title>
-    <link rel="stylesheet" href="./styles.css?v=20260617j" />
+    <link rel="stylesheet" href="./styles.css?v=20260617s" />
     <script type="importmap">
       {
         "imports": {
@@ -60,9 +60,15 @@
           <section class="panel viewer-panel">
             <div class="panel-header panel-header-tight">
               <h2>3D Preview</h2>
-              <p class="axis-legend">X tip · Y left · Z up</p>
+              <p class="axis-legend">X tip · Y left · Z up · Pitch · Roll · Yaw</p>
             </div>
-            <div id="threeContainer" class="three-container"></div>
+            <div id="threeContainer" class="three-container">
+              <div id="orientationHud" class="orientation-hud" aria-live="polite">
+                <span class="ori-pitch">Pitch <b>—</b></span>
+                <span class="ori-roll">Roll <b>—</b></span>
+                <span class="ori-yaw">Yaw <b>—</b></span>
+              </div>
+            </div>
             <div class="legend">
               <span class="legend-gradient"></span>
               <span>piezo low → high</span>
@@ -86,26 +92,34 @@
 
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
-                <h2>Accel</h2>
-                <p class="axis-legend">X tip · Y left · Z up</p>
+                <h2>Pitch · Roll</h2>
+                <p class="axis-legend">M4L tilt · rad</p>
               </div>
               <canvas id="motionCanvas" width="240" height="120"></canvas>
             </section>
 
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
-                <h2>Rotation</h2>
-                <p class="axis-legend">X tip · Y left · Z up</p>
+                <h2>Yaw</h2>
+                <p class="axis-legend">angle + rate · rad</p>
               </div>
               <canvas id="gyroCanvas" width="240" height="120"></canvas>
             </section>
 
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
-                <h2>Mag</h2>
-                <p class="axis-legend">X tip · Y left · Z up</p>
+                <h2>Linear</h2>
+                <p class="axis-legend">tip · left · up · m/s²</p>
               </div>
               <canvas id="magCanvas" width="240" height="120"></canvas>
+            </section>
+
+            <section class="panel graph-panel graph-panel-compact">
+              <div class="panel-header panel-header-mini">
+                <h2>Magnitude</h2>
+                <p class="axis-legend">gyroMag · linMag · onset ticks</p>
+              </div>
+              <canvas id="magnitudeCanvas" width="240" height="120"></canvas>
             </section>
           </div>
         </div>
@@ -128,6 +142,6 @@
     </div>
     </div>
 
-    <script type="module" src="./app.js?v=20260617j"></script>
+    <script type="module" src="./app.js?v=20260617s"></script>
   </body>
   </html>

@@ -1,6 +1,5 @@
-# Human Instrument 標準セッション起動（serial_hub + visualizer + ブラウザ）
+# Human Instrument session: serial_hub + visualizer + browser
 # Usage: powershell -File scripts\start_session.ps1
-# 停止: 開いた PowerShell ウィンドウで Ctrl+C（hub / viz サーバー）
 
 $ErrorActionPreference = "Stop"
 $TeensyRoot = Split-Path -Parent $PSScriptRoot
@@ -19,8 +18,8 @@ if (-not (Test-Path $VizRoot)) {
 
 Write-Host "=== Human Instrument session ==="
 Write-Host "1. serial_hub  COM8 -> UDP 7400 + SSE :8765"
-Write-Host "2. visualizer  $VizUrl (Connect Bridge 自動)"
-Write-Host "3. Live M4L    udpreceive 7400（そのまま）"
+Write-Host "2. visualizer  $VizUrl"
+Write-Host "3. Live M4L    udpreceive 7400"
 Write-Host ""
 
 $hubCmd = "Set-Location '$HubRoot'; python scripts\serial_hub.py --port COM8 --baud 115200 --udp-port 7400 --quiet"
@@ -28,7 +27,7 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", $hubCmd -WindowSty
 
 Start-Sleep -Seconds 2
 
-$vizCmd = "Set-Location '$VizRoot'; python -m http.server 4173"
+$vizCmd = "Set-Location '$VizRoot'; python serve.py --port 4173"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $vizCmd -WindowStyle Minimized
 
 Start-Sleep -Seconds 1

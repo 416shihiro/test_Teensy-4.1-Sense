@@ -2,8 +2,8 @@
  * Shared parameter schema for the browser visualizer and future Max for Live.
  * ICM-20948 (9-axis) + piezo + MAX4466 mic.
  */
-export const PARAM_SCHEMA_VERSION = 2;
-export const PARAM_STORAGE_KEY = "human-instrument-visualizer-params-v3";
+export const PARAM_SCHEMA_VERSION = 3;
+export const PARAM_STORAGE_KEY = "human-instrument-visualizer-params-v4";
 
 /** @typedef {{ threshold: number, ratio: number }} ParamKnob */
 
@@ -16,7 +16,7 @@ export const PARAM_SPEC = {
     ratio: { min: 0, max: 3, step: 0.05, default: 1 },
   },
   rotY: {
-    label: "Yaw rate",
+    label: "Yaw",
     unit: "rad/s",
     threshold: { min: 0, max: 2, step: 0.02, default: 0.03 },
     ratio: { min: 0, max: 3, step: 0.05, default: 1 },
@@ -28,19 +28,19 @@ export const PARAM_SPEC = {
     ratio: { min: 0, max: 3, step: 0.05, default: 1 },
   },
   linX: {
-    label: "Lin X",
+    label: "Lin tip",
     unit: "m/s²",
     threshold: { min: 0, max: 2, step: 0.02, default: 0.1 },
     ratio: { min: 0, max: 4, step: 0.05, default: 2 },
   },
   linY: {
-    label: "Lin Y",
+    label: "Lin left",
     unit: "m/s²",
     threshold: { min: 0, max: 2, step: 0.02, default: 0.1 },
     ratio: { min: 0, max: 4, step: 0.05, default: 2 },
   },
   linZ: {
-    label: "Lin Z",
+    label: "Lin up",
     unit: "m/s²",
     threshold: { min: 0, max: 2, step: 0.02, default: 0.1 },
     ratio: { min: 0, max: 4, step: 0.05, default: 2 },
@@ -57,11 +57,24 @@ export const PARAM_SPEC = {
     threshold: { min: 0, max: 3000, step: 10, default: 80 },
     ratio: { min: 0, max: 3, step: 0.05, default: 1 },
   },
+  gyroOnset: {
+    label: "Gyro onset",
+    unit: "ω|",
+    threshold: { min: 0.05, max: 1.5, step: 0.01, default: 0.18 },
+    ratio: { min: 0.2, max: 0.95, step: 0.05, default: 0.55 },
+  },
+  linOnset: {
+    label: "Lin onset",
+    unit: "|a|",
+    threshold: { min: 0.2, max: 6, step: 0.05, default: 1.2 },
+    ratio: { min: 0.2, max: 0.95, step: 0.05, default: 0.5 },
+  },
 };
 
 export const PARAM_GROUPS = [
-  { label: "Gyro", ids: ["rotX", "rotY", "rotZ"] },
-  { label: "Lin", ids: ["linX", "linY", "linZ"] },
+  { label: "Pitch·Roll·Yaw", ids: ["rotX", "rotY", "rotZ"] },
+  { label: "Linear", ids: ["linX", "linY", "linZ"] },
+  { label: "Onset", ids: ["gyroOnset", "linOnset"] },
   { label: "Pz", ids: ["piezo"] },
   { label: "Mc", ids: ["mic"] },
 ];
@@ -78,17 +91,21 @@ export const PARAM_COLORS = {
   linZ: "#3b82f6",
   piezo: "#22d3ee",
   mic: "#a78bfa",
+  gyroOnset: "#fb923c",
+  linOnset: "#22d3ee",
 };
 
 export const PARAM_SHORT = {
-  rotX: "rX",
-  rotY: "rY",
-  rotZ: "rZ",
-  linX: "aX",
-  linY: "aY",
-  linZ: "aZ",
+  rotX: "Pt",
+  rotY: "Yw",
+  rotZ: "Rl",
+  linX: "lX",
+  linY: "lY",
+  linZ: "lZ",
   piezo: "Pz",
   mic: "Mc",
+  gyroOnset: "gOn",
+  linOnset: "lOn",
 };
 
 export function createDefaultParams() {
@@ -152,7 +169,7 @@ export function serializeForMax(params) {
   return {
     version: PARAM_SCHEMA_VERSION,
     source: "human-instrument-visualizer",
-    imu: "ICM-20948",
+    imu: "MPU6050",
     params: PARAM_IDS.map((id) => ({
       id,
       label: PARAM_SPEC[id].label,
