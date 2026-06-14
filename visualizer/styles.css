@@ -373,6 +373,16 @@ button:disabled {
   width: 100%;
 }
 
+.param-group-display {
+  margin-left: auto;
+  flex: 0 0 auto;
+  border-left-color: #f472b6;
+}
+
+.param-group-display .param-group-dials {
+  gap: 0.06rem;
+}
+
 .param-group {
   display: flex;
   flex-direction: column;

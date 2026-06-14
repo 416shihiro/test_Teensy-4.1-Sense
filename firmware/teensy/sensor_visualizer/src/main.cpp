@@ -131,10 +131,10 @@ void sampleImu() {
   const float rawGy = gyro.gyro.y;
   const float rawGz = gyro.gyro.z;
 
-  gAx = rawAx;
+  gAx = mapChipAccelX(rawAx);
   gAy = rawAy;
   gAz = rawAz;
-  gGx = rawGx;
+  gGx = mapChipGyroX(rawGx);
   gGy = rawGy;
   gGz = rawGz;
 

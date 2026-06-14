@@ -180,3 +180,101 @@ export function serializeForMax(params) {
     })),
   };
 }
+
+/** Whole-screen color grading (CSS filter on viewport). */
+export const DISPLAY_PARAM_SCHEMA_VERSION = 1;
+export const DISPLAY_STORAGE_KEY = "human-instrument-visualizer-display-v1";
+
+/** @type {Record<string, { label: string, short: string, unit: string, min: number, max: number, step: number, default: number }>} */
+export const DISPLAY_PARAM_SPEC = {
+  hue: {
+    label: "Hue",
+    short: "1",
+    unit: "°",
+    min: 0,
+    max: 360,
+    step: 1,
+    default: 0,
+  },
+  hueRot: {
+    label: "Hue rotation",
+    short: "2",
+    unit: "°",
+    min: 0,
+    max: 360,
+    step: 1,
+    default: 0,
+  },
+  saturation: {
+    label: "Saturation",
+    short: "3",
+    unit: "%",
+    min: 0,
+    max: 2,
+    step: 0.01,
+    default: 1,
+  },
+  brightness: {
+    label: "Brightness",
+    short: "4",
+    unit: "%",
+    min: 0,
+    max: 2,
+    step: 0.01,
+    default: 1,
+  },
+  contrast: {
+    label: "Contrast",
+    short: "5",
+    unit: "%",
+    min: 0,
+    max: 2,
+    step: 0.01,
+    default: 1,
+  },
+};
+
+export const DISPLAY_PARAM_IDS = ["hue", "hueRot", "saturation", "brightness", "contrast"];
+
+export const DISPLAY_PARAM_COLORS = {
+  hue: "#f472b6",
+  hueRot: "#e879f9",
+  saturation: "#a3e635",
+  brightness: "#fbbf24",
+  contrast: "#38bdf8",
+};
+
+export function createDefaultDisplayParams() {
+  /** @type {Record<string, number>} */
+  const display = {};
+  for (const id of DISPLAY_PARAM_IDS) {
+    display[id] = DISPLAY_PARAM_SPEC[id].default;
+  }
+  return display;
+}
+
+export function loadDisplayParams() {
+  try {
+    const raw = localStorage.getItem(DISPLAY_STORAGE_KEY);
+    if (!raw) {
+      return createDefaultDisplayParams();
+    }
+    const parsed = JSON.parse(raw);
+    if (parsed?.version !== DISPLAY_PARAM_SCHEMA_VERSION || !parsed?.display) {
+      return createDefaultDisplayParams();
+    }
+    return { ...createDefaultDisplayParams(), ...parsed.display };
+  } catch {
+    return createDefaultDisplayParams();
+  }
+}
+
+export function saveDisplayParams(display) {
+  localStorage.setItem(
+    DISPLAY_STORAGE_KEY,
+    JSON.stringify({
+      version: DISPLAY_PARAM_SCHEMA_VERSION,
+      display,
+    }),
+  );
+}

@@ -46,30 +46,50 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function updateGravityLowPass(sample, motion) {
+function scaledGravityFromAccel(sample) {
+  const accelMag = sample.accelMag ?? Math.hypot(sample.ax, sample.ay, sample.az);
+  const scale = GRAVITY_MS2 / (accelMag || GRAVITY_MS2);
+  return {
+    x: sample.ax * scale,
+    y: sample.ay * scale,
+    z: sample.az * scale,
+  };
+}
+
+function estimateGravityVector(sample, motion) {
   const g = motion.gravityLp;
-  if (!motion.gravityLpReady) {
-    g.x = sample.ax;
-    g.y = sample.ay;
-    g.z = sample.az;
-    motion.gravityLpReady = true;
-    return;
-  }
   const gyroMag = sample.gyroMag ?? Math.hypot(sample.gx, sample.gy, sample.gz);
   const accelMag = sample.accelMag ?? Math.hypot(sample.ax, sample.ay, sample.az);
-  const nearStill =
-    Math.abs(accelMag - GRAVITY_MS2) < 2.5 && gyroMag < STILL_GYRO_RAD;
-  // Track gravity direction whenever |a|≈g (reduces Z-shake bleeding into ly).
-  let alpha = nearStill ? GRAVITY_LP_ALPHA : GRAVITY_LP_ALPHA * 0.2;
-  if (Math.abs(accelMag - GRAVITY_MS2) < 4.5) {
-    const scale = GRAVITY_MS2 / (accelMag || GRAVITY_MS2);
-    const gx = sample.ax * scale;
-    const gy = sample.ay * scale;
-    const gz = sample.az * scale;
-    g.x += alpha * (gx - g.x);
-    g.y += alpha * (gy - g.y);
-    g.z += alpha * (gz - g.z);
+  const gravDelta = Math.abs(accelMag - GRAVITY_MS2);
+  const nearStill = gravDelta < 3.0 && gyroMag < STILL_GYRO_RAD && accelMag > 1;
+
+  if (nearStill) {
+    const instant = scaledGravityFromAccel(sample);
+    g.x = instant.x;
+    g.y = instant.y;
+    g.z = instant.z;
+    motion.gravityLpReady = true;
+    return instant;
   }
+
+  if (!motion.gravityLpReady) {
+    const instant = scaledGravityFromAccel(sample);
+    g.x = instant.x;
+    g.y = instant.y;
+    g.z = instant.z;
+    motion.gravityLpReady = true;
+    return instant;
+  }
+
+  if (gravDelta < 4.5) {
+    const alpha = GRAVITY_LP_ALPHA * 0.18;
+    const instant = scaledGravityFromAccel(sample);
+    g.x += alpha * (instant.x - g.x);
+    g.y += alpha * (instant.y - g.y);
+    g.z += alpha * (instant.z - g.z);
+  }
+
+  return { x: g.x, y: g.y, z: g.z };
 }
 
 function linearResponseScale(sample) {
@@ -81,15 +101,31 @@ function linearResponseScale(sample) {
   );
 }
 
+/**
+ * Acrylic-tube mount (measured): chip axes ≠ bow labels on silkscreen.
+ * Subtract gravity in chip frame first, then map to bow frame for viz/M4L.
+ *
+ *   bow +X tip  =  chip lx   (ax/gx sign corrected in Teensy firmware)
+ *   bow +Y left =  chip lz
+ *   bow +Z up   =  chip ly
+ */
+export function mapBowFrameLinear(chipLinear) {
+  return {
+    lx: chipLinear.lx,
+    ly: chipLinear.lz,
+    lz: chipLinear.ly,
+  };
+}
+
 export function linearAcceleration(sample, motion) {
-  updateGravityLowPass(sample, motion);
-  const g = motion.gravityLp;
+  const g = estimateGravityVector(sample, motion);
   const spinScale = linearResponseScale(sample);
-  const raw = {
+  const rawChip = {
     lx: (sample.ax - g.x) * spinScale,
     ly: (sample.ay - g.y) * spinScale,
     lz: (sample.az - g.z) * spinScale,
   };
+  const raw = mapBowFrameLinear(rawChip);
   const smooth = motion.smoothLinear;
   smooth.lx += LINEAR_SMOOTH_ALPHA * (raw.lx - smooth.lx);
   smooth.ly += LINEAR_SMOOTH_ALPHA * (raw.ly - smooth.ly);

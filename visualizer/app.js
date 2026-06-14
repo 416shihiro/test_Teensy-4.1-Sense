@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
+  DISPLAY_PARAM_COLORS,
+  DISPLAY_PARAM_IDS,
+  DISPLAY_PARAM_SPEC,
   PARAM_COLORS,
   PARAM_GROUPS,
   PARAM_IDS,
@@ -8,8 +11,11 @@ import {
   PARAM_SPEC,
   applyThresholdRatio,
   applyThresholdRatioUnsigned,
+  createDefaultDisplayParams,
   createDefaultParams,
+  loadDisplayParams,
   loadParams,
+  saveDisplayParams,
   saveParams,
   serializeForMax,
 } from "./params.js";
@@ -19,6 +25,11 @@ import { createMotionState, processM4lMotion } from "./motion_core.js";
 const GRAPH_SIZE = 240;
 const PIEZO_REFERENCE_MAX = 2400;
 const MIC_REFERENCE_MAX = 3000;
+const PIEZO_THERMAL_REFERENCE = 900;
+const MIC_GRID_REFERENCE = 500;
+const MIC_GRID_FLOOR = 18;
+const MIC_GRID_GAMMA = 0.68;
+const MIC_GRID_PEAK_DECAY_TAU = 0.55;
 const PITCH_ROLL_REFERENCE = 1.2;
 const YAW_RATE_REFERENCE = 0.35;
 const LINEAR_REFERENCE = 2.2;
@@ -184,13 +195,20 @@ const state = {
     piezoHit: Array(GRAPH_SIZE).fill(0),
     micEnv: Array(GRAPH_SIZE).fill(0),
   },
+  preview: {
+    gridGlow: 0,
+    thermalBg: 0,
+    micPeakTrack: 12,
+  },
   motion: {
     ...createMotionState(),
     lastFrameAt: 0,
     lastBoxHalf: null,
     boxSignature: "",
   },
+  lastM4l: null,
   params: loadParams(),
+  display: loadDisplayParams(),
   serialFrameParser: null,
   needsGraphRedraw: true,
 };
@@ -222,11 +240,16 @@ function resetMotionState() {
   const keepFrameAt = state.motion.lastFrameAt;
   Object.assign(state.motion, createMotionState());
   state.motion.lastFrameAt = keepFrameAt;
+  state.lastM4l = null;
   delete state.motion.arcSmooth;
 }
 
 function processMotionSample(sample) {
-  packetDeltaSeconds(sample);
+  const dt = packetDeltaSeconds(sample);
+  state.lastM4l = processM4lMotion(sample, state.params, state.motion, {
+    integrateYaw: true,
+    dt,
+  });
 }
 
 function packetDeltaSeconds(sample) {
@@ -260,7 +283,7 @@ function computeYawRate(sample) {
 function enrichM4lSample(sample) {
   return {
     ...sample,
-    ...processM4lMotion(sample, state.params, state.motion, { integrateYaw: false }),
+    ...(state.lastM4l ?? processM4lMotion(sample, state.params, state.motion, { integrateYaw: false })),
   };
 }
 
@@ -1071,15 +1094,17 @@ function drawMicGraph() {
 }
 
 const threeContainer = document.querySelector("#threeContainer");
+const PREVIEW_BASE_BG = new THREE.Color(0x0d141d);
+const PREVIEW_RELEASE_TAU = 0.1;
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(threeContainer.clientWidth, threeContainer.clientHeight);
-renderer.setClearColor(0x000000, 0);
+renderer.setClearColor(PREVIEW_BASE_BG.getHex(), 1);
 renderer.sortObjects = true;
 threeContainer.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = null;
+scene.background = PREVIEW_BASE_BG.clone();
 
 const camera = new THREE.PerspectiveCamera(
   45,
@@ -1104,8 +1129,23 @@ const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
 directionalLight.position.set(3, -2, 6);
 scene.add(directionalLight);
 
-const gridHelper = new THREE.GridHelper(12, 24, 0x35507a, 0x203145);
+const GRID_COLOR_CENTER = new THREE.Color(0x35507a);
+const GRID_COLOR_LINE = new THREE.Color(0x203145);
+const GRID_GLOW_COLOR = new THREE.Color(0xffffff);
+const _gridCenterLit = new THREE.Color();
+const _gridLineLit = new THREE.Color();
+
+const GRID_SIZE = 12;
+const GRID_DIVISIONS = 24;
+const gridHelper = new THREE.GridHelper(
+  GRID_SIZE,
+  GRID_DIVISIONS,
+  GRID_COLOR_CENTER.getHex(),
+  GRID_COLOR_LINE.getHex(),
+);
 gridHelper.rotation.x = Math.PI / 2;
+gridHelper.userData.gridDivisions = GRID_DIVISIONS;
+gridHelper.userData.gridCenter = GRID_DIVISIONS / 2;
 scene.add(gridHelper);
 
 const sensorGroup = new THREE.Group();
@@ -1607,7 +1647,7 @@ const THERMAL_COLOR_STOPS = [
   { t: 1.0, r: 0.82, g: 0.93, b: 1.0 },
 ];
 
-function piezoColor(normalized) {
+function thermalColor(normalized) {
   const t = clamp(normalized, 0, 1);
   const color = new THREE.Color();
   for (let i = 0; i < THERMAL_COLOR_STOPS.length - 1; i += 1) {
@@ -1627,6 +1667,67 @@ function piezoColor(normalized) {
   const last = THERMAL_COLOR_STOPS[THERMAL_COLOR_STOPS.length - 1];
   color.setRGB(last.r, last.g, last.b);
   return color;
+}
+
+const piezoColor = thermalColor;
+const _previewBgColor = new THREE.Color();
+
+function updatePreviewEnvelope(current, target, frameDt) {
+  if (target >= current) {
+    return target;
+  }
+  return smoothArcScalar(current, target, frameDt, PREVIEW_RELEASE_TAU);
+}
+
+function updateGridGlow(glow) {
+  const g = clamp(glow, 0, 1);
+  const colorAttr = gridHelper.geometry.attributes.color;
+  if (!colorAttr) {
+    return;
+  }
+  const divisions = gridHelper.userData.gridDivisions ?? GRID_DIVISIONS;
+  const centerIdx = gridHelper.userData.gridCenter ?? divisions / 2;
+  _gridCenterLit.copy(GRID_COLOR_CENTER).lerp(GRID_GLOW_COLOR, g);
+  _gridLineLit.copy(GRID_COLOR_LINE).lerp(GRID_GLOW_COLOR, g * 0.94);
+
+  let vertex = 0;
+  for (let i = 0; i <= divisions; i += 1) {
+    const c = i === centerIdx ? _gridCenterLit : _gridLineLit;
+    for (let v = 0; v < 4; v += 1) {
+      colorAttr.setXYZ(vertex, c.r, c.g, c.b);
+      vertex += 1;
+    }
+  }
+  colorAttr.needsUpdate = true;
+}
+
+function updateThermalBackground(thermalNorm) {
+  const t = clamp(thermalNorm, 0, 1);
+  const hot = thermalColor(t);
+  _previewBgColor.copy(PREVIEW_BASE_BG).lerp(hot, clamp(t * 1.06, 0, 1));
+  scene.background.copy(_previewBgColor);
+  renderer.setClearColor(_previewBgColor.getHex(), 1);
+}
+
+function computeMicGridGlowTarget(sample, frameDt) {
+  const raw = Math.max(0, sample.micEnv ?? 0);
+  const prevPeak = state.preview.micPeakTrack ?? MIC_GRID_REFERENCE * 0.15;
+  const peak =
+    raw >= prevPeak
+      ? raw
+      : prevPeak + (raw - prevPeak) * (1 - Math.exp(-frameDt / MIC_GRID_PEAK_DECAY_TAU));
+  state.preview.micPeakTrack = Math.max(peak, MIC_GRID_FLOOR * 2);
+
+  const span = Math.max(
+    MIC_GRID_REFERENCE * 0.35,
+    state.preview.micPeakTrack - MIC_GRID_FLOOR,
+  );
+  const above = Math.max(0, raw - MIC_GRID_FLOOR);
+  return clamp(Math.pow(above / span, MIC_GRID_GAMMA), 0, 1);
+}
+
+function computePiezoThermalTarget(piezoScaled) {
+  return clamp(piezoScaled / PIEZO_THERMAL_REFERENCE, 0, 1);
 }
 
 function rotArcDynamics(prevAngle, angle, prevRate, frameDt) {
@@ -1674,7 +1775,9 @@ function updateThreeObject(sample) {
   const frameDt = frameDeltaSeconds();
   integrateYaw(sample, frameDt);
 
-  const m4l = processM4lMotion(sample, state.params, state.motion, { integrateYaw: false });
+  const m4l =
+    state.lastM4l ??
+    processM4lMotion(sample, state.params, state.motion, { integrateYaw: false });
   const p = state.params;
   const live = {
     pitchOut: applyThresholdRatio(m4l.pitch, p.rotX.threshold, p.rotX.ratio),
@@ -1800,6 +1903,13 @@ function updateThreeObject(sample) {
   );
   const piezoNormalized = clamp(piezoScaled / PIEZO_REFERENCE_MAX, 0, 1);
   chipMaterial.color.copy(piezoColor(piezoNormalized));
+
+  const gridGlowTarget = computeMicGridGlowTarget(sample, frameDt);
+  const thermalBgTarget = computePiezoThermalTarget(piezoScaled);
+  state.preview.gridGlow = updatePreviewEnvelope(state.preview.gridGlow, gridGlowTarget, frameDt);
+  state.preview.thermalBg = updatePreviewEnvelope(state.preview.thermalBg, thermalBgTarget, frameDt);
+  updateGridGlow(state.preview.gridGlow);
+  updateThermalBackground(state.preview.thermalBg);
 }
 
 function render() {
@@ -1942,6 +2052,24 @@ ui.demoButton.addEventListener("click", () => {
   startDemo();
 });
 
+function formatDisplayValue(id, value) {
+  if (id === "hue" || id === "hueRot") {
+    return `${Math.round(value)}°`;
+  }
+  return `${Math.round(value * 100)}%`;
+}
+
+function applyDisplayFilter() {
+  const d = state.display;
+  const hueDeg = ((d.hue + d.hueRot) % 360 + 360) % 360;
+  document.body.style.filter = [
+    `hue-rotate(${hueDeg}deg)`,
+    `saturate(${d.saturation * 100}%)`,
+    `brightness(${d.brightness * 100}%)`,
+    `contrast(${d.contrast * 100}%)`,
+  ].join(" ");
+}
+
 function formatParamValue(id, key, value) {
   if (key === "threshold" && (id === "piezo" || id === "mic")) {
     if (value >= 1000) {
@@ -2078,13 +2206,93 @@ function initParamControls() {
     root.appendChild(groupEl);
   }
 
+  const displayGroupEl = document.createElement("div");
+  displayGroupEl.className = "param-group param-group-display";
+  displayGroupEl.style.setProperty("--group-color", DISPLAY_PARAM_COLORS.hue);
+
+  const displayTitle = document.createElement("span");
+  displayTitle.className = "param-group-label";
+  displayTitle.textContent = "Color";
+  displayGroupEl.appendChild(displayTitle);
+
+  const displayDials = document.createElement("div");
+  displayDials.className = "param-group-dials";
+
+  const displayDialRefs = [];
+
+  for (const id of DISPLAY_PARAM_IDS) {
+    const spec = DISPLAY_PARAM_SPEC[id];
+    const color = DISPLAY_PARAM_COLORS[id];
+
+    const dial = document.createElement("label");
+    dial.className = "param-dial";
+    dial.style.setProperty("--dial-color", color);
+    dial.title = `${spec.short} ${spec.label}`;
+
+    const keyLabel = document.createElement("span");
+    keyLabel.className = "param-dial-key";
+    keyLabel.textContent = spec.short;
+
+    const ring = document.createElement("div");
+    ring.className = "param-dial-ring";
+
+    const pointer = document.createElement("div");
+    pointer.className = "param-dial-pointer";
+
+    const input = document.createElement("input");
+    input.type = "range";
+    input.className = "param-dial-input";
+    input.min = String(spec.min);
+    input.max = String(spec.max);
+    input.step = String(spec.step);
+    input.value = String(state.display[id]);
+    input.dataset.displayId = id;
+
+    const readout = document.createElement("output");
+    readout.className = "param-dial-value";
+
+    ring.appendChild(pointer);
+    dial.appendChild(input);
+    dial.appendChild(ring);
+    dial.appendChild(keyLabel);
+    dial.appendChild(readout);
+    displayDials.appendChild(dial);
+
+    const syncDisplayDial = () => {
+      const value = Number.parseFloat(input.value);
+      pointer.style.setProperty("--dial-angle", `${dialAngleDeg(value, spec.min, spec.max)}deg`);
+      readout.textContent = formatDisplayValue(id, value);
+    };
+
+    input.addEventListener("input", () => {
+      const value = Number.parseFloat(input.value);
+      state.display[id] = value;
+      syncDisplayDial();
+      saveDisplayParams(state.display);
+      applyDisplayFilter();
+    });
+
+    displayDialRefs.push({ id, input, pointer, readout, syncDisplayDial });
+    syncDisplayDial();
+  }
+
+  displayGroupEl.appendChild(displayDials);
+  root.appendChild(displayGroupEl);
+
   document.querySelector("#paramResetButton")?.addEventListener("click", () => {
     state.params = createDefaultParams();
+    state.display = createDefaultDisplayParams();
     saveParams(state.params);
+    saveDisplayParams(state.display);
     for (const ref of dialRefs) {
       ref.input.value = String(state.params[ref.id][ref.key]);
       syncDial(ref.id, ref.key, ref.input, ref.pointer, ref.readout);
     }
+    for (const ref of displayDialRefs) {
+      ref.input.value = String(state.display[ref.id]);
+      ref.syncDisplayDial();
+    }
+    applyDisplayFilter();
     refreshExport();
   });
 
@@ -2099,6 +2307,7 @@ function initParamControls() {
   });
 
   refreshExport();
+  applyDisplayFilter();
   requestAnimationFrame(fitParamStrip);
 }
 
