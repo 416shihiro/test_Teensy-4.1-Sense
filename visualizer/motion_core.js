@@ -22,11 +22,15 @@ export function createMotionState() {
   };
 }
 
+/**
+ * Chip-frame tilt from gravity (ax,ay,az = MPU6050 raw telemetry).
+ * Mount intent: +X bow tip, +Y bow left, +Z sky — see chip_frame.h.
+ */
 export function accelTilt(sample) {
-  const up = sample.az || 0.0001;
+  const horiz = Math.hypot(sample.ay, sample.az) || 1;
   return {
-    pitch: Math.atan2(sample.ay, Math.hypot(sample.az, sample.ax) || 1),
-    roll: Math.atan2(sample.ax, up),
+    pitch: Math.atan2(-sample.ax, horiz),
+    roll: Math.atan2(sample.ay, sample.az || 1),
   };
 }
 
@@ -55,12 +59,17 @@ function updateGravityLowPass(sample, motion) {
   const accelMag = sample.accelMag ?? Math.hypot(sample.ax, sample.ay, sample.az);
   const nearStill =
     Math.abs(accelMag - GRAVITY_MS2) < 2.5 && gyroMag < STILL_GYRO_RAD;
-  if (!nearStill) {
-    return;
+  // Track gravity direction whenever |a|≈g (reduces Z-shake bleeding into ly).
+  let alpha = nearStill ? GRAVITY_LP_ALPHA : GRAVITY_LP_ALPHA * 0.2;
+  if (Math.abs(accelMag - GRAVITY_MS2) < 4.5) {
+    const scale = GRAVITY_MS2 / (accelMag || GRAVITY_MS2);
+    const gx = sample.ax * scale;
+    const gy = sample.ay * scale;
+    const gz = sample.az * scale;
+    g.x += alpha * (gx - g.x);
+    g.y += alpha * (gy - g.y);
+    g.z += alpha * (gz - g.z);
   }
-  g.x += GRAVITY_LP_ALPHA * (sample.ax - g.x);
-  g.y += GRAVITY_LP_ALPHA * (sample.ay - g.y);
-  g.z += GRAVITY_LP_ALPHA * (sample.az - g.z);
 }
 
 function linearResponseScale(sample) {

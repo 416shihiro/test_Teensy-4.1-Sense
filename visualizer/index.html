@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SHIHIRO Human Inst Sensor Viz ver.20260617a</title>
-    <link rel="stylesheet" href="./styles.css?v=20260617s" />
+    <link rel="stylesheet" href="./styles.css?v=20260618d" />
     <script type="importmap">
       {
         "imports": {
@@ -60,13 +60,21 @@
           <section class="panel viewer-panel">
             <div class="panel-header panel-header-tight">
               <h2>3D Preview</h2>
-              <p class="axis-legend">X tip · Y left · Z up · Pitch · Roll · Yaw</p>
+              <p class="axis-legend">lX/Y/Z thick bars = linear · cyan burst = lOn</p>
             </div>
             <div id="threeContainer" class="three-container">
               <div id="orientationHud" class="orientation-hud" aria-live="polite">
-                <span class="ori-pitch">Pitch <b>—</b></span>
-                <span class="ori-roll">Roll <b>—</b></span>
-                <span class="ori-yaw">Yaw <b>—</b></span>
+                <span class="ori-live-label">→ Live</span>
+                <span class="ori-pitch">Pt <b>—</b></span>
+                <span class="ori-roll">Rl <b>—</b></span>
+                <span class="ori-yaw">Yw <b>—</b></span>
+              </div>
+              <div id="axisGuideHud" class="axis-guide-hud axis-guide-compact" aria-label="3D view hint">
+                <p class="axis-guide-title">+Z up · camera +180° around Z</p>
+                <p class="axis-guide-row axis-z"><span class="axis-swatch"></span><strong>lX/Y/Z</strong> thick bars from origin — linear → Live</p>
+                <p class="axis-guide-row axis-z"><span class="axis-swatch"></span><strong>lOn</strong> cyan 24 spokes — onset flash only</p>
+                <p class="axis-guide-row tilt-pitch"><span class="axis-swatch"></span><strong>gOn</strong> orange polar — twist angle from 0°</p>
+                <p class="axis-guide-row axis-x"><span class="axis-swatch"></span><strong>Pt/Rl/Yw</strong> arcs — |ω| radius · |α| sweep from 0°</p>
               </div>
             </div>
             <div class="legend">
@@ -101,7 +109,7 @@
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
                 <h2>Yaw</h2>
-                <p class="axis-legend">angle + rate · rad</p>
+                <p class="axis-legend graph-onset-hint gyro-hint">Twist bow → gOn</p>
               </div>
               <canvas id="gyroCanvas" width="240" height="120"></canvas>
             </section>
@@ -109,7 +117,7 @@
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
                 <h2>Linear</h2>
-                <p class="axis-legend">tip · left · up · m/s²</p>
+                <p class="axis-legend graph-onset-hint lin-hint">Tap / shake → lOn</p>
               </div>
               <canvas id="magCanvas" width="240" height="120"></canvas>
             </section>
@@ -117,7 +125,8 @@
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
                 <h2>Magnitude</h2>
-                <p class="axis-legend">gyroMag · linMag · onset ticks</p>
+                <p class="axis-legend graph-onset-hint gyro-hint">Twist bow → gOn · gyroMag</p>
+                <p class="axis-legend graph-onset-hint lin-hint">Tap / shake → lOn · linMag</p>
               </div>
               <canvas id="magnitudeCanvas" width="240" height="120"></canvas>
             </section>
@@ -142,6 +151,6 @@
     </div>
     </div>
 
-    <script type="module" src="./app.js?v=20260617s"></script>
+    <script type="module" src="./app.js?v=20260618k"></script>
   </body>
   </html>

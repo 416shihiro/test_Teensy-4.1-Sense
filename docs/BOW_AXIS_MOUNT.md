@@ -1,43 +1,49 @@
-# Bow axis mount (ICM-20948)
+# MPU6050 chip axis mount
 
-## Physical mount
+## Physical mount (acrylic tube on bow)
 
-- Chip package **top (+Z_icm)** points toward the **bow tip**.
-- Looking **frog → tip**: silkscreen / marking at **front-left**.
+- Telemetry `DATA` ax…gz / gx…gz are **raw MPU6050 chip axes** (no firmware remapping).
+- Mount intent: **+X = bow tip**, **+Y = bow left**, **+Z = sky / up** (match by eye in the acrylic tube).
 
-## Bow frame (telemetry `DATA` ax…gz, mx…headingDeg)
+## Chip frame (serial + M4L + viz)
 
-| Axis | Direction |
-|------|-----------|
-| **+X** | Bow tip (roll / spin about stick) |
-| **+Y** | Left (frog→tip view); pitch (tip up/down) |
-| **+Z** | Up (sky); gravity when level |
+| Axis | Intent |
+|------|--------|
+| **+X** | Bow tip (pink arrow in 3D preview) |
+| **+Y** | Bow left (player's left-hand side) |
+| **+Z** | Sky / up |
 
-## Sensor → bow rotation (calibrated 2026-06-17b)
+Documented in `firmware/teensy/sensor_visualizer/src/chip_frame.h`.
 
-Pitch and roll couple to ICM Y/Z, not the naive Z/Y tip alignment:
+## Derived angles (motion_core.js / hi_motion_core.js)
+
+Assumes +X tip convention:
+
+| Param | Meaning | ω axis |
+|-------|---------|--------|
+| **Pitch** (rotX) | Nod tip up/down | +Y |
+| **Roll** (rotZ) | Lean sideways | +X |
+| **Yaw** (rotY) | Twist (integrated) | +Z |
 
 ```
-Xb = Ys   // roll ω about tip
-Yb = Zs   // pitch ω
-Zb = -Xs  // up; horizontal rest → az ≈ +9.81
+pitch = atan2(-ax, hypot(ay, az))
+roll  = atan2(ay, az)
 ```
 
-Implemented in `firmware/teensy/sensor_visualizer/src/bow_frame.h`.
+## 3D preview (browser viz)
 
-`headingDeg` uses tilt-compensated magnetometer in bow frame (unchanged).
+- Sensor **fixed** at origin; axes = chip X/Y/Z (red/green/blue).
+- Pink arrow fixed on **+X**.
+- Bars / rings show **values sent to Live** (after threshold), not gravity tilt.
 
 ## Verify
 
-1. Bow horizontal: **az ≈ +9.81**, ax/ay small; **headingDeg** stable.
-2. **Tip up/down (pitch)**: Rotation **Y** (green), Accel Y/Z move.
-3. **Spin about stick (roll)**: Rotation **X** (red).
-4. Heading still OK when rotating bow in horizontal plane.
-
-If one axis sign is inverted only, flip that row in `bow_frame.h`.
+1. Bow level: note which ax/ay/az ≈ ±9.81 — confirms chip orientation.
+2. Nod tip: **Pt** bar (red) moves; tune rotX threshold until it feels right.
+3. If one axis sign is wrong: flip that axis in `chip_frame.h` (firmware) and keep viz/M4L in sync.
 
 ## Graph colors
 
-- Red = X (tip / roll)
-- Green = Y (left / pitch)
-- Blue = Z (up)
+- Red = X
+- Green = Y
+- Blue = Z

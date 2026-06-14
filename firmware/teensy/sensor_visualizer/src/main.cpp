@@ -11,7 +11,7 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include "audio_input_mic_adc1.h"
-#include "bow_frame.h"
+#include "chip_frame.h"
 
 constexpr uint8_t kPiezoPin = A0;
 constexpr uint8_t kMicPin = A1;
@@ -70,13 +70,6 @@ uint32_t gLastImuWarnMs = 0;
 
 float magnitude3(float x, float y, float z) {
   return sqrtf((x * x) + (y * y) + (z * z));
-}
-
-void applyBowFrame(float sx, float sy, float sz, float& bx, float& by, float& bz) {
-  const BowVec3 bow = sensorToBow(sx, sy, sz);
-  bx = bow.x;
-  by = bow.y;
-  bz = bow.z;
 }
 
 void scanI2c() {
@@ -138,8 +131,12 @@ void sampleImu() {
   const float rawGy = gyro.gyro.y;
   const float rawGz = gyro.gyro.z;
 
-  applyBowFrame(rawAx, rawAy, rawAz, gAx, gAy, gAz);
-  applyBowFrame(rawGx, rawGy, rawGz, gGx, gGy, gGz);
+  gAx = rawAx;
+  gAy = rawAy;
+  gAz = rawAz;
+  gGx = rawGx;
+  gGy = rawGy;
+  gGz = rawGz;
 
   gMx = 0.0f;
   gMy = 0.0f;
@@ -178,7 +175,7 @@ void printHeader() {
   Serial.println("=== Human Instrument — Teensy stereo USB Audio ===");
   Serial.println("IMU: MPU6050 (6-axis) | SDA=18 SCL=19 | mag/heading=0");
   Serial.println("USB L=piezo(A0/ADC2) R=mic(A1/ADC1) @ 44.1kHz");
-  Serial.println("Bow frame: +X=tip +Y=left +Z=up | map Ys->Xb Zs->Yb -Xs->Zb");
+  Serial.println("Chip frame: MPU6050 raw ax..gz (+X~bow tip, see chip_frame.h)");
   Serial.println(
       "DATA,ms,piezoRaw,piezoCentered,piezoEnv,piezoPeak,piezoHit,ax,ay,az,gx,gy,gz,accelMag,gyroMag,micRaw,micEnv,mx,my,mz,magMag,headingDeg");
 }

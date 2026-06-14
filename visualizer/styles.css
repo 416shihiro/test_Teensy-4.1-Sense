@@ -527,6 +527,18 @@ button:disabled {
   line-height: 1.1;
 }
 
+.graph-onset-hint {
+  font-weight: 600;
+}
+
+.graph-onset-hint.gyro-hint {
+  color: #fb923c;
+}
+
+.graph-onset-hint.lin-hint {
+  color: #22d3ee;
+}
+
 .panel-header-tight p {
   margin: 0.1rem 0 0.35rem;
   font-size: 0.65rem;
@@ -579,6 +591,18 @@ button:disabled {
   color: #3b82f6;
 }
 
+.orientation-hud .ori-live-label {
+  font-weight: 700;
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+  margin-bottom: 0.05rem;
+}
+
+.orientation-hud .ori-mag b {
+  color: #e2e8f0;
+}
+
 .orientation-hud .ori-onset {
   font-variant-numeric: tabular-nums;
 }
@@ -589,6 +613,109 @@ button:disabled {
 
 .orientation-hud .lin-onset {
   color: #22d3ee;
+}
+
+.axis-guide-hud.axis-guide-compact {
+  max-width: 14rem;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.56rem;
+}
+
+.axis-guide-hud.axis-guide-compact .axis-guide-title {
+  margin-bottom: 0.15rem;
+}
+
+.axis-guide-hud {
+  position: absolute;
+  left: 0.5rem;
+  bottom: 0.45rem;
+  z-index: 2;
+  max-width: min(17rem, 46%);
+  padding: 0.38rem 0.5rem 0.42rem;
+  border-radius: 0.4rem;
+  background: rgba(8, 12, 22, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 0.56rem;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.78);
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+}
+
+.axis-guide-title {
+  margin: 0 0 0.18rem;
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.axis-guide-title-tilt {
+  margin-top: 0.28rem;
+}
+
+.axis-guide-row {
+  margin: 0.1rem 0 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.28rem;
+}
+
+.axis-guide-row strong {
+  font-weight: 700;
+}
+
+.axis-guide-row em {
+  font-style: normal;
+  opacity: 0.85;
+}
+
+.axis-swatch {
+  flex: 0 0 0.42rem;
+  width: 0.42rem;
+  height: 0.42rem;
+  margin-top: 0.12rem;
+  border-radius: 999px;
+}
+
+.axis-guide-row.axis-x .axis-swatch,
+.axis-guide-row.tilt-pitch .axis-swatch {
+  background: #ef4444;
+}
+
+.axis-guide-row.axis-y .axis-swatch,
+.axis-guide-row.tilt-roll .axis-swatch {
+  background: #22c55e;
+}
+
+.axis-guide-row.axis-z .axis-swatch,
+.axis-guide-row.tilt-yaw .axis-swatch {
+  background: #3b82f6;
+}
+
+.axis-guide-row.axis-x strong {
+  color: #ef4444;
+}
+
+.axis-guide-row.axis-y strong {
+  color: #22c55e;
+}
+
+.axis-guide-row.axis-z strong {
+  color: #3b82f6;
+}
+
+.axis-guide-row.tilt-pitch strong {
+  color: #ef4444;
+}
+
+.axis-guide-row.tilt-roll strong {
+  color: #22c55e;
+}
+
+.axis-guide-row.tilt-yaw strong {
+  color: #3b82f6;
 }
 
 .three-container canvas {

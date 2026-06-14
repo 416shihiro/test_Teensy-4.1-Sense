@@ -1,8 +1,5 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { LineMaterial } from "three/addons/lines/LineMaterial.js";
-import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
-import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import {
   PARAM_COLORS,
   PARAM_GROUPS,
@@ -26,21 +23,9 @@ const PITCH_ROLL_REFERENCE = 1.2;
 const YAW_RATE_REFERENCE = 0.35;
 const LINEAR_REFERENCE = 2.2;
 const GRAVITY_MS2 = 9.81;
-const STILL_GYRO_RAD = 0.1;
-const GRAVITY_LP_ALPHA = 0.07;
-const LINEAR_FULL_SCALE = 2.2;
-const LINEAR_RESPONSE_POWER = 1.25;
-const LINEAR_EDGE_GAIN = 2.2;
-const LINEAR_SMOOTH_ALPHA = 0.58;
-const ROTATION_ATTENUATION_START = 0.04;
-const ROTATION_ATTENUATION_RANGE = 0.22;
-const BOX_MIN_HALF = 0.38;
-const CUBE_EDGE_LINE_WIDTH = 2;
-const BOX_EDGE_SCALE_LARGE = 3;
-const BOX_MAX_EXTRA_HALF = BOX_MIN_HALF * 2 * (BOX_EDGE_SCALE_LARGE - 1);
 
-// Teensy firmware outputs bow frame (ICM-20948 mount, calibrated 2026-06-17b).
-// +X tip/roll, +Y left/pitch, +Z up. Graphs: red=X green=Y blue=Z.
+// Teensy firmware outputs MPU6050 chip frame (raw ax..gz, no remapping).
+// +X ≈ bow tip in acrylic tube. Graphs: red=X green=Y blue=Z.
 function sensorToBoardSample(sample) {
   const ax = sample.ax;
   const ay = sample.ay;
@@ -69,7 +54,15 @@ function sensorToBoardSample(sample) {
   };
 }
 
-const BRIDGE_STREAM_URL = `${location.protocol}//${location.hostname}:8765/stream`;
+function resolveBridgeStreamUrl() {
+  // serve.py on :4173 proxies /stream — same origin is more reliable than :8765
+  if (location.port === "4173") {
+    return `${location.origin}/stream`;
+  }
+  return `${location.protocol}//${location.hostname}:8765/stream`;
+}
+
+const BRIDGE_STREAM_URL = resolveBridgeStreamUrl();
 
 const DEVICE_PROFILES = {
   teensy: {
@@ -226,47 +219,14 @@ function clamp(value, min, max) {
 }
 
 function resetMotionState() {
-  const keepBox = {
-    lastFrameAt: state.motion.lastFrameAt,
-    lastBoxHalf: state.motion.lastBoxHalf,
-    boxSignature: state.motion.boxSignature,
-  };
-  Object.assign(state.motion, createMotionState(), keepBox);
+  const keepFrameAt = state.motion.lastFrameAt;
+  Object.assign(state.motion, createMotionState());
+  state.motion.lastFrameAt = keepFrameAt;
+  delete state.motion.arcSmooth;
 }
 
-function accelTilt(sample) {
-  const up = sample.az || 0.0001;
-  return {
-    pitch: Math.atan2(sample.ay, Math.hypot(sample.az, sample.ax) || 1),
-    roll: Math.atan2(sample.ax, up),
-  };
-}
-
-function updateGravityLowPass(sample) {
-  const g = state.motion.gravityLp;
-  if (!state.motion.gravityLpReady) {
-    g.x = sample.ax;
-    g.y = sample.ay;
-    g.z = sample.az;
-    state.motion.gravityLpReady = true;
-    return;
-  }
-  const nearStill =
-    Math.abs(sample.accelMag - GRAVITY_MS2) < 2.5 && sample.gyroMag < STILL_GYRO_RAD;
-  if (!nearStill) {
-    return;
-  }
-  g.x += GRAVITY_LP_ALPHA * (sample.ax - g.x);
-  g.y += GRAVITY_LP_ALPHA * (sample.ay - g.y);
-  g.z += GRAVITY_LP_ALPHA * (sample.az - g.z);
-}
-
-function linearResponseScale(sample) {
-  return clamp(
-    1 - (sample.gyroMag - ROTATION_ATTENUATION_START) / ROTATION_ATTENUATION_RANGE,
-    0.12,
-    1,
-  );
+function processMotionSample(sample) {
+  packetDeltaSeconds(sample);
 }
 
 function packetDeltaSeconds(sample) {
@@ -289,60 +249,6 @@ function frameDeltaSeconds() {
   return clamp((now - lastFrameAt) / 1000, 0.001, 0.05);
 }
 
-function processMotionSample(sample) {
-  packetDeltaSeconds(sample);
-  state.motion.lastBoxHalf = boxHalfExtents(sample);
-}
-
-function linearAcceleration(sample) {
-  updateGravityLowPass(sample);
-  const g = state.motion.gravityLp;
-  const spinScale = linearResponseScale(sample);
-  const raw = {
-    lx: (sample.ax - g.x) * spinScale,
-    ly: (sample.ay - g.y) * spinScale,
-    lz: (sample.az - g.z) * spinScale,
-  };
-  const smooth = state.motion.smoothLinear;
-  smooth.lx += LINEAR_SMOOTH_ALPHA * (raw.lx - smooth.lx);
-  smooth.ly += LINEAR_SMOOTH_ALPHA * (raw.ly - smooth.ly);
-  smooth.lz += LINEAR_SMOOTH_ALPHA * (raw.lz - smooth.lz);
-  return smooth;
-}
-
-function linearMagnitudeForAxis(value, threshold) {
-  const magnitude = Math.abs(value);
-  if (magnitude <= threshold) {
-    return 0;
-  }
-  return magnitude - threshold;
-}
-
-function extraHalfExtentFromMag(magnitude, ratio) {
-  if (magnitude <= 0) {
-    return 0;
-  }
-  const t = clamp(magnitude / LINEAR_FULL_SCALE, 0, 1);
-  return t ** LINEAR_RESPONSE_POWER * BOX_MAX_EXTRA_HALF * ratio * LINEAR_EDGE_GAIN;
-}
-
-function axisSignedGrowth(linearComponent, axisParam) {
-  const magnitude = linearMagnitudeForAxis(linearComponent, axisParam.threshold);
-  const extra = extraHalfExtentFromMag(magnitude, axisParam.ratio);
-  if (linearComponent >= 0) {
-    return {
-      pos: BOX_MIN_HALF + extra,
-      neg: BOX_MIN_HALF,
-      center: extra / 2,
-    };
-  }
-  return {
-    pos: BOX_MIN_HALF,
-    neg: BOX_MIN_HALF + extra,
-    center: -extra / 2,
-  };
-}
-
 function computeYawRate(sample) {
   const gravityMag = Math.hypot(sample.ax, sample.ay, sample.az) || GRAVITY_MS2;
   const ux = sample.ax / gravityMag;
@@ -362,16 +268,24 @@ function formatOrientationDeg(rad) {
   return `${THREE.MathUtils.radToDeg(rad).toFixed(1)}°`;
 }
 
-function updateOrientationHud({ pitch, roll, yaw, yawRate, gyroOnset, linOnset }) {
+function formatLiveRad(rad) {
+  const sign = rad >= 0 ? "+" : "";
+  return `${sign}${rad.toFixed(2)}`;
+}
+
+function updateLiveHud(m4l, live) {
   if (!ui.orientationHud) {
     return;
   }
-  const gOn = gyroOnset ? "●" : "○";
-  const lOn = linOnset ? "●" : "○";
+  const gOn = m4l.gyroOnset ? "●" : "○";
+  const lOn = m4l.linOnset ? "●" : "○";
   ui.orientationHud.innerHTML = `
-    <span class="ori-pitch">Pitch <b>${formatOrientationDeg(pitch)}</b></span>
-    <span class="ori-roll">Roll <b>${formatOrientationDeg(roll)}</b></span>
-    <span class="ori-yaw">Yaw <b>${formatOrientationDeg(yaw)}</b> · ${yawRate.toFixed(3)} rad/s</span>
+    <span class="ori-live-label">→ Live</span>
+    <span class="ori-pitch">Pt <b>${formatLiveRad(live.pitchOut)}</b></span>
+    <span class="ori-roll">Rl <b>${formatLiveRad(live.rollOut)}</b></span>
+    <span class="ori-yaw">Yw <b>${formatOrientationDeg(m4l.yaw)}</b></span>
+    <span class="ori-mag">|ω| <b>${m4l.gyroMag.toFixed(2)}</b></span>
+    <span class="ori-mag">|a| <b>${m4l.linMag.toFixed(2)}</b></span>
     <span class="ori-onset gyro-onset">gOn ${gOn}</span>
     <span class="ori-onset lin-onset">lOn ${lOn}</span>
   `;
@@ -390,26 +304,6 @@ function integrateYaw(sample, dt) {
   }
   const gatedRate = Math.sign(yawRate) * (Math.abs(yawRate) - threshold) * ratio;
   state.motion.yaw += gatedRate * dt;
-}
-
-function boxHalfExtents(sample) {
-  const linear = linearAcceleration(sample);
-  const p = state.params;
-  const alongBoardX = axisSignedGrowth(linear.lx, p.linX);
-  const alongBoardY = axisSignedGrowth(linear.ly, p.linY);
-  const alongUp = axisSignedGrowth(linear.lz, p.linZ);
-  return {
-    // Board X+ → Three +X, board Y+ (into scene) → Three -Z, board Z+ → Three +Y
-    posX: alongBoardX.pos,
-    negX: alongBoardX.neg,
-    centerX: alongBoardX.center,
-    posY: alongUp.pos,
-    negY: alongUp.neg,
-    centerY: alongUp.center,
-    posZ: alongBoardY.neg,
-    negZ: alongBoardY.pos,
-    centerZ: -alongBoardY.center,
-  };
 }
 
 function pushHistory(sample) {
@@ -602,8 +496,25 @@ async function connectBridge() {
 
   const source = new EventSource(BRIDGE_STREAM_URL);
   state.bridgeSource = source;
+  let bridgeOpenedAt = Date.now();
+  let bridgeDataSeen = false;
+  const bridgeWatchdog = window.setInterval(() => {
+    if (state.bridgeSource !== source) {
+      window.clearInterval(bridgeWatchdog);
+      return;
+    }
+    if (bridgeDataSeen) {
+      return;
+    }
+    if (Date.now() - bridgeOpenedAt < 3500) {
+      return;
+    }
+    ui.serialStatus.textContent = "Bridge · hub OK · no COM data (plug Teensy USB?)";
+    ui.serialStatus.style.color = "#fbbf24";
+  }, 1500);
 
   source.onopen = () => {
+    bridgeOpenedAt = Date.now();
     ui.disconnectButton.disabled = false;
     setLinkStatus({
       deviceId: device.id,
@@ -611,15 +522,22 @@ async function connectBridge() {
       detail: "hub",
       tone: "ok",
     });
-    ui.serialStatus.textContent = "Bridge (hub) · M4L 共有 · COM8";
-    ui.serialStatus.style.color = "#34d399";
+    ui.serialStatus.textContent = "Bridge · waiting for DATA…";
+    ui.serialStatus.style.color = "#fbbf24";
   };
 
   source.onmessage = (event) => {
+    if (!bridgeDataSeen) {
+      bridgeDataSeen = true;
+      window.clearInterval(bridgeWatchdog);
+      ui.serialStatus.textContent = "Bridge (hub) · M4L 共有 · COM8";
+      ui.serialStatus.style.color = "#34d399";
+    }
     consumeLine(event.data);
   };
 
   source.onerror = () => {
+    window.clearInterval(bridgeWatchdog);
     if (state.bridgeSource !== source) {
       return;
     }
@@ -960,6 +878,16 @@ function drawPitchRollGraph() {
   drawSeries(ctx, state.history.roll, "#22c55e", min, max, area);
 }
 
+function drawGraphCaption(ctx, text, color, x, y) {
+  ctx.save();
+  ctx.font = "600 10px Inter, system-ui, sans-serif";
+  ctx.fillStyle = color;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
 function drawYawGraph() {
   if (!ui.gyroCanvas) {
     return;
@@ -970,11 +898,34 @@ function drawYawGraph() {
   const rateMin = -YAW_RATE_REFERENCE;
   const rateMax = YAW_RATE_REFERENCE;
   ctx.clearRect(0, 0, width, height);
+  drawGraphCaption(ctx, "Twist bow → gOn", "#fb923c", area.left, area.top + 2);
   drawYAxisScale(ctx, area, yawRange.min, yawRange.max, { unit: "rad" });
   drawGrid(ctx, area, 4);
   drawZeroLine(ctx, area, yawRange.min, yawRange.max);
   drawSeries(ctx, state.history.yaw, "#3b82f6", yawRange.min, yawRange.max, area);
   drawSeries(ctx, state.history.yawRate, "#fb923c", rateMin, rateMax, area);
+}
+
+function linearGraphRange() {
+  let peak = 0.15;
+  for (const key of ["lx", "ly", "lz"]) {
+    for (const value of state.history[key]) {
+      peak = Math.max(peak, Math.abs(value));
+    }
+  }
+  const bound = Math.max(0.45, Math.min(LINEAR_REFERENCE, peak * 1.25));
+  return { min: -bound, max: bound };
+}
+
+function drawGraphAxisLegend(ctx, area, items) {
+  let x = area.left + 3;
+  const y = area.top + area.height - 5;
+  ctx.font = "600 9px Inter, system-ui, sans-serif";
+  for (const { text, color } of items) {
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+    x += ctx.measureText(text).width + 12;
+  }
 }
 
 function drawLinearGraph() {
@@ -983,15 +934,20 @@ function drawLinearGraph() {
   }
   const { ctx, width, height } = prepareCanvas2d(ui.magCanvas);
   const area = plotArea(width, height);
-  const min = -LINEAR_REFERENCE;
-  const max = LINEAR_REFERENCE;
+  const { min, max } = linearGraphRange();
   ctx.clearRect(0, 0, width, height);
+  drawGraphCaption(ctx, "Tap / shake → lOn", "#22d3ee", area.left, area.top + 2);
   drawYAxisScale(ctx, area, min, max, { unit: "m/s²" });
   drawGrid(ctx, area, 4);
   drawZeroLine(ctx, area, min, max);
   drawSeries(ctx, state.history.lx, "#ef4444", min, max, area);
   drawSeries(ctx, state.history.ly, "#22c55e", min, max, area);
   drawSeries(ctx, state.history.lz, "#3b82f6", min, max, area);
+  drawGraphAxisLegend(ctx, area, [
+    { text: "lX tip", color: "#ef4444" },
+    { text: "lY left", color: "#22c55e" },
+    { text: "lZ up", color: "#3b82f6" },
+  ]);
 }
 
 function drawThresholdLine(ctx, area, min, max, value, color, alpha = 0.4) {
@@ -1035,6 +991,8 @@ function drawMagnitudeGraph() {
   const gyroTh = state.params.gyroOnset.threshold;
   const linTh = state.params.linOnset.threshold;
   ctx.clearRect(0, 0, width, height);
+  drawGraphCaption(ctx, "Twist bow → gOn (gyroMag)", "#fb923c", area.left, area.top + 2);
+  drawGraphCaption(ctx, "Tap / shake → lOn (linMag)", "#22d3ee", area.left, area.top + 14);
   drawYAxisScale(ctx, area, 0, max, { variable: true });
   drawGrid(ctx, area, 4);
   drawThresholdLine(ctx, area, 0, max, gyroTh, "#fb923c");
@@ -1129,8 +1087,9 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   100,
 );
-// Bow +X tip → Three +X, bow +Y left → Three -Z, bow +Z up → Three +Y
-const INITIAL_CAMERA_POSITION = new THREE.Vector3(-8, 6.2, 8);
+// Chip frame: +X tip, +Y left, +Z sky — camera +180° around Z from prior view
+camera.up.set(0, 0, 1);
+const INITIAL_CAMERA_POSITION = new THREE.Vector3(-5.6, -5.4, 4.8);
 camera.position.copy(INITIAL_CAMERA_POSITION);
 camera.lookAt(0, 0, 0);
 
@@ -1142,23 +1101,39 @@ controls.update();
 scene.add(new THREE.AmbientLight(0xffffff, 1.4));
 
 const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
-directionalLight.position.set(3, 5, 4);
+directionalLight.position.set(3, -2, 6);
 scene.add(directionalLight);
 
 const gridHelper = new THREE.GridHelper(12, 24, 0x35507a, 0x203145);
+gridHelper.rotation.x = Math.PI / 2;
 scene.add(gridHelper);
 
-const cubeGroup = new THREE.Group();
-scene.add(cubeGroup);
+const sensorGroup = new THREE.Group();
+scene.add(sensorGroup);
 
-const BOARD_AXIS_LENGTH = 1.85;
+const CHIP_AXIS_LENGTH = 1.65;
+const CHIP_HALF = { x: 0.28, y: 0.18, z: 0.12 };
+const METER_LIN_SCALE = 1.35;
+const LIN_BAR_WIDTH = 0.2;
+const ARC_BASE_RADIUS = 1.0;
+const ARC_OMEGA_RADIUS = 0.84;
+const ARC_ALPHA_SWEEP = 0.38;
+const ARC_OMEGA_THICK = 0.032;
+const ARC_RADIUS_SMOOTH_TAU = 0.14;
+const ARC_SWEEP_SMOOTH_TAU = 0.22;
+const LIN_FLASH_DECAY_MS = 1150;
+const GYRO_FLASH_DECAY_MS = 1150;
+const LIN_SPOKE_COUNT = 24;
+const GYRO_POLAR_RAYS = 36;
+const BOW_PINK = 0xf472b6;
+const BOW_LENGTH = 2.35;
 
-function createBoardAxisLines(length) {
+function createChipAxisLines(length) {
   const group = new THREE.Group();
   const axes = [
     { dir: [1, 0, 0], color: 0xef4444 },
-    { dir: [0, 0, -1], color: 0x22c55e },
-    { dir: [0, 1, 0], color: 0x3b82f6 },
+    { dir: [0, 1, 0], color: 0x22c55e },
+    { dir: [0, 0, 1], color: 0x3b82f6 },
   ];
   for (const { dir, color } of axes) {
     const geometry = new THREE.BufferGeometry().setFromPoints([
@@ -1175,21 +1150,61 @@ function createBoardAxisLines(length) {
   return group;
 }
 
-cubeGroup.add(createBoardAxisLines(BOARD_AXIS_LENGTH));
+sensorGroup.add(createChipAxisLines(CHIP_AXIS_LENGTH));
 
-function createAxisLabel(text, color, position) {
-  const size = 128;
+function createBowArrow() {
+  const group = new THREE.Group();
+  const material = new THREE.MeshBasicMaterial({
+    color: BOW_PINK,
+    depthTest: true,
+    depthWrite: false,
+  });
+  const headLength = 0.36;
+  const shaftLength = BOW_LENGTH - headLength;
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.07, 0.07, shaftLength, 14),
+    material,
+  );
+  shaft.rotation.z = -Math.PI / 2;
+  shaft.position.x = shaftLength / 2;
+
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.15, headLength, 18), material);
+  head.rotation.z = -Math.PI / 2;
+  head.position.x = BOW_LENGTH - headLength / 2;
+
+  group.add(shaft);
+  group.add(head);
+  group.renderOrder = 5;
+  return group;
+}
+
+sensorGroup.add(createBowArrow());
+
+const METER_LABEL_SCALE_MULT = 3;
+const AXIS_LABEL_CANVAS_REF = 128;
+
+function createAxisLabel(text, color, position, scale = 0.62) {
+  const font = "bold 76px Inter, system-ui, sans-serif";
+  const pad = 16;
+  const measureCanvas = document.createElement("canvas");
+  const mctx = measureCanvas.getContext("2d");
+  mctx.font = font;
+  const textWidth = mctx.measureText(text).width;
+  const width = Math.max(AXIS_LABEL_CANVAS_REF, Math.ceil(textWidth) + pad * 2);
+  const height = AXIS_LABEL_CANVAS_REF;
+
   const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, size, size);
+  ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = color;
-  ctx.font = "bold 76px Inter, system-ui, sans-serif";
+  ctx.font = font;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, size / 2, size / 2);
+  ctx.fillText(text, width / 2, height / 2);
   const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
   const material = new THREE.SpriteMaterial({
     map: texture,
     transparent: true,
@@ -1197,75 +1212,390 @@ function createAxisLabel(text, color, position) {
   });
   const sprite = new THREE.Sprite(material);
   sprite.position.copy(position);
-  sprite.scale.set(0.62, 0.62, 1);
-  sprite.renderOrder = 10;
+  sprite.scale.set(scale * (width / AXIS_LABEL_CANVAS_REF), scale, 1);
+  sprite.renderOrder = 25;
   return sprite;
 }
 
-const axisLabelDistance = BOARD_AXIS_LENGTH + 0.2;
-cubeGroup.add(createAxisLabel("X", "#ef4444", new THREE.Vector3(axisLabelDistance, 0, 0)));
-cubeGroup.add(createAxisLabel("Y", "#22c55e", new THREE.Vector3(0, 0, -axisLabelDistance)));
-cubeGroup.add(createAxisLabel("Z", "#3b82f6", new THREE.Vector3(0, axisLabelDistance, 0)));
+function createMeterLabel(text, color = "#e2e8f0", scale = 0.26) {
+  const size = 320;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, size, size);
+  ctx.fillStyle = "rgba(8,12,22,0.78)";
+  const pad = 10;
+  const textPad = 14;
+  ctx.font = "600 52px Inter, system-ui, sans-serif";
+  const tw = ctx.measureText(text).width;
+  const boxW = tw + textPad * 2;
+  const boxH = 58;
+  const boxX = (size - boxW) / 2;
+  const boxY = (size - boxH) / 2;
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.fillStyle = color;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, size / 2, size / 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+  });
+  const sprite = new THREE.Sprite(material);
+  const displayScale = scale * METER_LABEL_SCALE_MULT;
+  sprite.scale.set(displayScale, displayScale * (boxH / boxW), 1);
+  sprite.renderOrder = 30;
+  return sprite;
+}
 
-const cubeMaterial = new THREE.MeshBasicMaterial({
+const axisLabelDistance = CHIP_AXIS_LENGTH + 0.18;
+const xLabelDistance = BOW_LENGTH + 0.42;
+sensorGroup.add(createAxisLabel("X tip", "#ef4444", new THREE.Vector3(xLabelDistance, 0, 0.34), 0.36));
+sensorGroup.add(
+  createAxisLabel("Y left", "#22c55e", new THREE.Vector3(0, axisLabelDistance + 0.06, 0.22), 0.33),
+);
+sensorGroup.add(
+  createAxisLabel("Z up", "#3b82f6", new THREE.Vector3(0, 0, axisLabelDistance + 0.1), 0.33),
+);
+
+const chipMaterial = new THREE.MeshBasicMaterial({
   color: 0x2563eb,
   transparent: true,
-  opacity: 0.3,
+  opacity: 0.42,
   depthWrite: false,
   side: THREE.DoubleSide,
 });
-
-const cubeMesh = new THREE.Mesh(
-  new THREE.BoxGeometry(1, 1, 1),
-  cubeMaterial,
+const chipMesh = new THREE.Mesh(
+  new THREE.BoxGeometry(CHIP_HALF.x * 2, CHIP_HALF.y * 2, CHIP_HALF.z * 2),
+  chipMaterial,
 );
-cubeMesh.renderOrder = 0;
-cubeGroup.add(cubeMesh);
+chipMesh.renderOrder = 2;
+sensorGroup.add(chipMesh);
 
-function setCubeEdgePositions(boxGeometry, lineGeometry) {
-  const edges = new THREE.EdgesGeometry(boxGeometry);
-  lineGeometry.setPositions(edges.attributes.position.array);
-  edges.dispose();
+const chipEdges = new THREE.LineSegments(
+  new THREE.EdgesGeometry(chipMesh.geometry),
+  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5 }),
+);
+chipEdges.renderOrder = 3;
+sensorGroup.add(chipEdges);
+
+function arcPointOnPlane(plane, angle, radius, offset) {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  if (plane === "pitch") {
+    return new THREE.Vector3(offset.x + c * radius, offset.y, offset.z + s * radius);
+  }
+  if (plane === "roll") {
+    return new THREE.Vector3(offset.x, offset.y + c * radius, offset.z + s * radius);
+  }
+  return new THREE.Vector3(offset.x + c * radius, offset.y + s * radius, offset.z);
 }
 
-const edgeLineGeometry = new LineSegmentsGeometry();
-setCubeEdgePositions(new THREE.BoxGeometry(1.02, 1.02, 1.02), edgeLineGeometry);
+function disposeArcMeter(arcMeter) {
+  if (arcMeter.tube) {
+    arcMeter.tube.geometry.dispose();
+    arcMeter.tube.material.dispose();
+    arcMeter.group.remove(arcMeter.tube);
+    arcMeter.tube = null;
+  }
+  if (arcMeter.head) {
+    arcMeter.head.geometry.dispose();
+    arcMeter.head.material.dispose();
+    arcMeter.group.remove(arcMeter.head);
+    arcMeter.head = null;
+  }
+}
 
-const edgeLineResolution = new THREE.Vector2();
-const edgeLineMaterial = new LineMaterial({
-  color: 0xffffff,
-  linewidth: CUBE_EDGE_LINE_WIDTH,
-  transparent: true,
-  opacity: 0.45,
-  depthWrite: false,
-});
-
-const edgeLines = new LineSegments2(edgeLineGeometry, edgeLineMaterial);
-edgeLines.renderOrder = 1;
-cubeGroup.add(edgeLines);
-
-function updateEdgeLineResolution() {
-  const pixelRatio = renderer.getPixelRatio();
-  edgeLineResolution.set(
-    threeContainer.clientWidth * pixelRatio,
-    threeContainer.clientHeight * pixelRatio,
+function updateArcArrowMeter(arcMeter, plane, offset, sweepRad, radius, tubeRadius, opacity) {
+  const minSweep = 0.04;
+  if (Math.abs(sweepRad) < minSweep) {
+    arcMeter.group.visible = false;
+    disposeArcMeter(arcMeter);
+    return;
+  }
+  arcMeter.group.visible = true;
+  const steps = 28;
+  const points = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const t = i / steps;
+    points.push(arcPointOnPlane(plane, sweepRad * t, radius, offset));
+  }
+  const signature = points
+    .map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`)
+    .join("|");
+  if (signature === arcMeter.signature && arcMeter.tube) {
+    arcMeter.tube.material.opacity = opacity;
+    return;
+  }
+  arcMeter.signature = signature;
+  disposeArcMeter(arcMeter);
+  const curve = new THREE.CatmullRomCurve3(points);
+  const tubeGeom = new THREE.TubeGeometry(curve, steps, tubeRadius, 7, false);
+  arcMeter.tube = new THREE.Mesh(
+    tubeGeom,
+    new THREE.MeshBasicMaterial({
+      color: arcMeter.color,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+    }),
   );
-  edgeLineMaterial.resolution.copy(edgeLineResolution);
-}
-updateEdgeLineResolution();
+  arcMeter.tube.renderOrder = 8;
+  arcMeter.group.add(arcMeter.tube);
 
-const glowMesh = new THREE.Mesh(
-  new THREE.SphereGeometry(1.0, 32, 32),
-  new THREE.MeshBasicMaterial({
-    color: 0x2563eb,
-    transparent: true,
-    opacity: 0.08,
-    depthWrite: false,
-    visible: false,
-  }),
-);
-glowMesh.visible = false;
-cubeGroup.add(glowMesh);
+  const end = points[points.length - 1];
+  const prev = points[points.length - 2];
+  const tangent = end.clone().sub(prev).normalize();
+  const headLen = tubeRadius * 4.2;
+  arcMeter.head = new THREE.Mesh(
+    new THREE.ConeGeometry(tubeRadius * 2.4, headLen, 10),
+    new THREE.MeshBasicMaterial({
+      color: arcMeter.color,
+      transparent: true,
+      opacity: Math.min(1, opacity + 0.12),
+      depthWrite: false,
+    }),
+  );
+  arcMeter.head.position.copy(end).add(tangent.clone().multiplyScalar(headLen * 0.42));
+  arcMeter.head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tangent);
+  arcMeter.head.renderOrder = 9;
+  arcMeter.group.add(arcMeter.head);
+}
+
+function fibonacciSphereDirections(count) {
+  const dirs = [];
+  const phi = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < count; i += 1) {
+    const y = 1 - (2 * i) / Math.max(1, count - 1);
+    const r = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = phi * i;
+    dirs.push(
+      new THREE.Vector3(Math.cos(theta) * r, Math.sin(theta) * r, y).normalize(),
+    );
+  }
+  return dirs;
+}
+
+function polarPlaneDirections(count) {
+  const dirs = [];
+  for (let i = 0; i < count; i += 1) {
+    const angle = (i / count) * Math.PI * 2;
+    dirs.push(new THREE.Vector3(Math.cos(angle), Math.sin(angle), 0));
+  }
+  return dirs;
+}
+
+function flashEnvelope(flashAge, decayMs = LIN_FLASH_DECAY_MS) {
+  if (flashAge < 0 || flashAge >= decayMs) {
+    return 0;
+  }
+  const u = flashAge / decayMs;
+  const punch = Math.exp(-((flashAge - 35) ** 2) / 4200);
+  const tail = Math.exp(-u * 2.4) * (1 - u * 0.15);
+  return clamp(punch * 0.95 + tail * 0.82, 0, 1);
+}
+
+const _spokeY = new THREE.Vector3(0, 1, 0);
+const _barZ = new THREE.Vector3(0, 0, 1);
+const _spokeDir = new THREE.Vector3();
+
+function createLinAxisBar(color) {
+  const geometry = new THREE.BoxGeometry(LIN_BAR_WIDTH, LIN_BAR_WIDTH, 1);
+  geometry.translate(0, 0, 0.5);
+  return new THREE.Mesh(
+    geometry,
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false }),
+  );
+}
+
+const LIN_AXIS_X = new THREE.Vector3(1, 0, 0);
+const LIN_AXIS_Y = new THREE.Vector3(0, 1, 0);
+const LIN_AXIS_Z = new THREE.Vector3(0, 0, 1);
+const _linAxis = new THREE.Vector3();
+
+function updateLinAxisBar(mesh, axisUnit, value, scale, flashEnv) {
+  const rawLen = Math.abs(value) * scale;
+  const len = rawLen > 0.008 ? Math.max(rawLen, 0.22) * (1 + flashEnv * 0.65) : 0;
+  mesh.visible = len > 0.01;
+  if (!mesh.visible) {
+    mesh.position.set(0, 0, 0);
+    mesh.quaternion.identity();
+    return 0;
+  }
+  const sign = Math.sign(value || 1);
+  _linAxis.copy(axisUnit).multiplyScalar(sign);
+  mesh.scale.set(1, 1, len);
+  mesh.position.set(0, 0, 0);
+  mesh.quaternion.setFromUnitVectors(_barZ, _linAxis);
+  mesh.material.opacity = clamp(0.72 + rawLen * 0.35 + flashEnv * 0.28, 0.72, 1);
+  return len;
+}
+
+function createSpokeMeter(color, directions) {
+  const group = new THREE.Group();
+  const spokes = directions.map((dir) => {
+    const mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.028, 0.028, 1, 6),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      }),
+    );
+    mesh.renderOrder = 7;
+    group.add(mesh);
+    return { dir: dir.clone(), mesh };
+  });
+  return { group, spokes };
+}
+
+function updateSpoke(mesh, dir, length, radius, opacity) {
+  const visible = length > 0.012 && opacity > 0.03;
+  mesh.visible = visible;
+  if (!visible) {
+    return;
+  }
+  mesh.scale.set(radius / 0.028, length, radius / 0.028);
+  _spokeDir.copy(dir);
+  mesh.position.copy(_spokeDir.multiplyScalar(length * 0.5));
+  mesh.quaternion.setFromUnitVectors(_spokeY, dir);
+  mesh.material.opacity = opacity;
+}
+
+function updateLinSpokeMeter(meter, lx, ly, lz, linMag, flashEnv) {
+  if (flashEnv < 0.06) {
+    for (const spoke of meter.spokes) {
+      spoke.mesh.visible = false;
+    }
+    return new THREE.Vector3();
+  }
+  const accel = new THREE.Vector3(lx, ly, lz);
+  let maxLen = 0;
+  let maxTip = new THREE.Vector3();
+  for (const spoke of meter.spokes) {
+    const proj = accel.dot(spoke.dir);
+    const baseLen =
+      Math.abs(proj) * METER_LIN_SCALE * 0.85 + linMag * 0.12 + flashEnv * 0.55;
+    const len = baseLen * (1 + flashEnv * 2.4);
+    const opacity = clamp(flashEnv * 0.95, 0, 1);
+    const radius = 0.04 + flashEnv * 0.055;
+    updateSpoke(spoke.mesh, spoke.dir, len, radius, opacity);
+    if (len > maxLen) {
+      maxLen = len;
+      maxTip.copy(spoke.dir).multiplyScalar(len);
+    }
+  }
+  return maxTip;
+}
+
+function updateGyroPolarMeter(meter, yaw, gyroMag, flashEnv) {
+  const sign = Math.sign(yaw) || 1;
+  const sector = Math.abs(yaw) % (Math.PI * 2);
+  const baseLen = 0.12 + gyroMag * 0.42;
+  let labelPos = new THREE.Vector3(0.35, 0, 0.12);
+  for (const spoke of meter.spokes) {
+    let rayAngle = Math.atan2(spoke.dir.y, spoke.dir.x);
+    if (sign < 0) {
+      rayAngle = -rayAngle;
+    }
+    rayAngle = ((rayAngle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    const inSector = sector < 0.02 || rayAngle <= sector;
+    const len = (baseLen + (inSector ? 0.22 : 0)) * (1 + flashEnv * 2.3);
+    const opacity = clamp(
+      (inSector ? 0.42 : 0.1) + gyroMag * 0.28 + flashEnv * 0.9,
+      0,
+      1,
+    );
+    const radius = 0.02 + flashEnv * 0.042 + (inSector ? 0.012 : 0);
+    updateSpoke(spoke.mesh, spoke.dir, len, radius, opacity);
+    if (inSector && len >= labelPos.length()) {
+      labelPos.copy(spoke.dir).multiplyScalar(len);
+    }
+  }
+  return labelPos;
+}
+
+function createArcMeter(color) {
+  return {
+    group: new THREE.Group(),
+    color,
+    tube: null,
+    head: null,
+    signature: "",
+  };
+}
+
+const meters = {
+  pitchArc: createArcMeter(0xef4444),
+  rollArc: createArcMeter(0x22c55e),
+  yawArc: createArcMeter(0x60a5fa),
+  linSpokes: createSpokeMeter(0x22d3ee, fibonacciSphereDirections(LIN_SPOKE_COUNT)),
+  linBarX: createLinAxisBar(0xef4444),
+  linBarY: createLinAxisBar(0x22c55e),
+  linBarZ: createLinAxisBar(0x3b82f6),
+  gyroPolar: createSpokeMeter(0xfb923c, polarPlaneDirections(GYRO_POLAR_RAYS)),
+};
+
+meters.linBarX.position.set(0, 0, 0);
+meters.linBarY.position.set(0, 0, 0);
+meters.linBarZ.position.set(0, 0, 0);
+
+const meterLabels = {
+  pt: createMeterLabel("Pt ω", "#ef4444", 0.24),
+  rl: createMeterLabel("Rl ω", "#22c55e", 0.24),
+  yw: createMeterLabel("Yw ω", "#60a5fa", 0.24),
+  gyro: createMeterLabel("gOn", "#fb923c", 0.22),
+  lon: createMeterLabel("lOn", "#22d3ee", 0.24),
+  lx: createMeterLabel("lX", "#ef4444", 0.22),
+  ly: createMeterLabel("lY", "#22c55e", 0.22),
+  lz: createMeterLabel("lZ", "#3b82f6", 0.22),
+};
+
+const ARC_OFFSETS = {
+  pitch: new THREE.Vector3(0, CHIP_HALF.y + 0.28, 0),
+  roll: new THREE.Vector3(CHIP_HALF.x + 0.28, 0, 0),
+  yaw: new THREE.Vector3(0, 0, 0.1),
+};
+
+for (const key of [
+  "pitchArc",
+  "rollArc",
+  "yawArc",
+  "linSpokes",
+  "linBarX",
+  "linBarY",
+  "linBarZ",
+  "gyroPolar",
+]) {
+  sensorGroup.add(meters[key].group ?? meters[key]);
+}
+for (const label of Object.values(meterLabels)) {
+  sensorGroup.add(label);
+}
+
+const _barTipLocal = new THREE.Vector3(0, 0, 1);
+
+function placeLabelAtBarTip(sprite, mesh, offset = new THREE.Vector3(0, 0, 0.14)) {
+  _barTipLocal.set(0, 0, mesh.scale.z + 0.04);
+  _spokeDir.copy(_barTipLocal);
+  mesh.localToWorld(_spokeDir);
+  placeMeterLabel(sprite, _spokeDir, offset);
+}
+
+const _meterLabelPos = new THREE.Vector3();
+
+function placeMeterLabel(sprite, worldPos, offset) {
+  _meterLabelPos.copy(worldPos);
+  if (offset) {
+    _meterLabelPos.add(offset);
+  }
+  sprite.position.copy(_meterLabelPos);
+}
 
 const THERMAL_COLOR_STOPS = [
   { t: 0.0, r: 0.0, g: 0.0, b: 0.0 },
@@ -1299,66 +1629,169 @@ function piezoColor(normalized) {
   return color;
 }
 
-function applyAsymmetricBox(half) {
-  const sizeX = half.posX + half.negX;
-  const sizeY = half.posY + half.negY;
-  const sizeZ = half.posZ + half.negZ;
-  const signature = [
-    half.posX.toFixed(2),
-    half.negX.toFixed(2),
-    half.centerX.toFixed(2),
-    half.posY.toFixed(2),
-    half.negY.toFixed(2),
-    half.centerY.toFixed(2),
-    half.posZ.toFixed(2),
-    half.negZ.toFixed(2),
-    half.centerZ.toFixed(2),
-  ].join("|");
+function rotArcDynamics(prevAngle, angle, prevRate, frameDt) {
+  const rate = frameDt > 0 ? (angle - prevAngle) / frameDt : 0;
+  const accel = frameDt > 0 ? (rate - prevRate) / frameDt : 0;
+  return { rate, accel };
+}
 
-  if (signature === state.motion.boxSignature) {
-    return;
+function smoothArcScalar(prev, target, frameDt, tau) {
+  if (!Number.isFinite(prev)) {
+    return target;
   }
-  state.motion.boxSignature = signature;
+  const blend = 1 - Math.exp(-frameDt / Math.max(tau, 1e-4));
+  return prev + (target - prev) * blend;
+}
 
-  const centerX = half.centerX;
-  const centerY = half.centerY;
-  const centerZ = half.centerZ;
+function smoothArcVisuals(key, raw, frameDt) {
+  if (!state.motion.arcSmooth) {
+    state.motion.arcSmooth = {};
+  }
+  const slot = state.motion.arcSmooth[key] ?? {
+    radius: raw.radius,
+    sweep: raw.sweep,
+  };
+  slot.radius = smoothArcScalar(slot.radius, raw.radius, frameDt, ARC_RADIUS_SMOOTH_TAU);
+  slot.sweep = smoothArcScalar(slot.sweep, raw.sweep, frameDt, ARC_SWEEP_SMOOTH_TAU);
+  state.motion.arcSmooth[key] = slot;
+  return {
+    sweep: slot.sweep,
+    radius: slot.radius,
+    tube: raw.tube,
+    opacity: raw.opacity,
+  };
+}
 
-  cubeMesh.geometry.dispose();
-  cubeMesh.geometry = new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
-  cubeMesh.position.set(centerX, centerY, centerZ);
-
-  setCubeEdgePositions(cubeMesh.geometry, edgeLineGeometry);
-  edgeLines.computeLineDistances();
-  edgeLines.position.copy(cubeMesh.position);
-
-  const glowRadius = Math.max(sizeX, sizeY, sizeZ) * 0.72;
-  glowMesh.geometry.dispose();
-  glowMesh.geometry = new THREE.SphereGeometry(glowRadius, 24, 24);
-  glowMesh.position.copy(cubeMesh.position);
+function arcVisuals(omega, alpha) {
+  const radius = ARC_BASE_RADIUS + Math.abs(omega) * ARC_OMEGA_RADIUS;
+  const sweep = Math.sign(alpha || omega || 1) * Math.abs(alpha) * ARC_ALPHA_SWEEP;
+  const tube = 0.022 + Math.abs(omega) * ARC_OMEGA_THICK;
+  const opacity = clamp(0.28 + Math.abs(omega) * 0.48 + Math.abs(alpha) * 0.22, 0.22, 1);
+  return { sweep, radius, tube, opacity };
 }
 
 function updateThreeObject(sample) {
   const frameDt = frameDeltaSeconds();
   integrateYaw(sample, frameDt);
 
-  const { pitch, roll } = accelTilt(sample);
+  const m4l = processM4lMotion(sample, state.params, state.motion, { integrateYaw: false });
   const p = state.params;
-  const pitchOut = applyThresholdRatio(pitch, p.rotX.threshold, p.rotX.ratio);
-  const rollOut = applyThresholdRatio(roll, p.rotZ.threshold, p.rotZ.ratio);
-  cubeGroup.rotation.order = "YXZ";
-  cubeGroup.rotation.set(pitchOut, state.motion.yaw, rollOut);
+  const live = {
+    pitchOut: applyThresholdRatio(m4l.pitch, p.rotX.threshold, p.rotX.ratio),
+    rollOut: applyThresholdRatio(m4l.roll, p.rotZ.threshold, p.rotZ.ratio),
+    lxOut: applyThresholdRatio(m4l.lx, p.linX.threshold, p.linX.ratio),
+    lyOut: applyThresholdRatio(m4l.ly, p.linY.threshold, p.linY.ratio),
+    lzOut: applyThresholdRatio(m4l.lz, p.linZ.threshold, p.linZ.ratio),
+  };
 
-  updateOrientationHud({
-    pitch,
-    roll,
-    yaw: state.motion.yaw,
-    yawRate: computeYawRate(sample),
-    gyroOnset: state.sample.gyroOnset,
-    linOnset: state.sample.linOnset,
-  });
+  if (m4l.gyroOnset) {
+    state.motion.gyroFlashStart = performance.now();
+  }
+  if (m4l.linOnset) {
+    state.motion.linFlashStart = performance.now();
+  }
 
-  applyAsymmetricBox(state.motion.lastBoxHalf ?? boxHalfExtents(sample));
+  const pitchDyn = rotArcDynamics(
+    state.motion.lastPitch ?? m4l.pitch,
+    m4l.pitch,
+    state.motion.lastPitchRate ?? 0,
+    frameDt,
+  );
+  state.motion.lastPitch = m4l.pitch;
+  state.motion.lastPitchRate = pitchDyn.rate;
+
+  const rollDyn = rotArcDynamics(
+    state.motion.lastRoll ?? m4l.roll,
+    m4l.roll,
+    state.motion.lastRollRate ?? 0,
+    frameDt,
+  );
+  state.motion.lastRoll = m4l.roll;
+  state.motion.lastRollRate = rollDyn.rate;
+
+  const pitchVis = smoothArcVisuals("pitch", arcVisuals(pitchDyn.rate, pitchDyn.accel), frameDt);
+  updateArcArrowMeter(
+    meters.pitchArc,
+    "pitch",
+    ARC_OFFSETS.pitch,
+    pitchVis.sweep,
+    pitchVis.radius,
+    pitchVis.tube,
+    pitchVis.opacity,
+  );
+  const pitchLabelPos = arcPointOnPlane(
+    "pitch",
+    pitchVis.sweep * 0.52,
+    pitchVis.radius,
+    ARC_OFFSETS.pitch,
+  );
+  placeMeterLabel(meterLabels.pt, pitchLabelPos, new THREE.Vector3(0, 0.14, 0));
+
+  const rollVis = smoothArcVisuals("roll", arcVisuals(rollDyn.rate, rollDyn.accel), frameDt);
+  updateArcArrowMeter(
+    meters.rollArc,
+    "roll",
+    ARC_OFFSETS.roll,
+    rollVis.sweep,
+    rollVis.radius,
+    rollVis.tube,
+    rollVis.opacity,
+  );
+  const rollLabelPos = arcPointOnPlane("roll", rollVis.sweep * 0.52, rollVis.radius, ARC_OFFSETS.roll);
+  placeMeterLabel(meterLabels.rl, rollLabelPos, new THREE.Vector3(0.14, 0, 0));
+
+  const yaw = state.motion.yaw;
+  const yawOmega = computeYawRate(sample);
+  const yawAlpha =
+    frameDt > 0 ? (yawOmega - (state.motion.lastYawOmega ?? yawOmega)) / frameDt : 0;
+  state.motion.lastYawOmega = yawOmega;
+  const yawVis = smoothArcVisuals("yaw", arcVisuals(yawOmega, yawAlpha), frameDt);
+  updateArcArrowMeter(
+    meters.yawArc,
+    "yaw",
+    ARC_OFFSETS.yaw,
+    yawVis.sweep,
+    yawVis.radius,
+    yawVis.tube,
+    yawVis.opacity,
+  );
+  const yawLabelPos = arcPointOnPlane("yaw", yawVis.sweep * 0.52, yawVis.radius, ARC_OFFSETS.yaw);
+  placeMeterLabel(meterLabels.yw, yawLabelPos, new THREE.Vector3(0, 0, 0.2));
+
+  const now = performance.now();
+  const linFlashEnv = flashEnvelope(now - (state.motion.linFlashStart || 0), LIN_FLASH_DECAY_MS);
+  updateLinSpokeMeter(
+    meters.linSpokes,
+    live.lxOut,
+    live.lyOut,
+    live.lzOut,
+    m4l.linMag,
+    linFlashEnv,
+  );
+
+  updateLinAxisBar(meters.linBarX, LIN_AXIS_X, live.lxOut, METER_LIN_SCALE, linFlashEnv);
+  placeLabelAtBarTip(meterLabels.lx, meters.linBarX, new THREE.Vector3(0, 0, 0.12));
+
+  updateLinAxisBar(meters.linBarY, LIN_AXIS_Y, live.lyOut, METER_LIN_SCALE, linFlashEnv);
+  placeLabelAtBarTip(meterLabels.ly, meters.linBarY, new THREE.Vector3(0, 0, 0.12));
+
+  const lzLen = updateLinAxisBar(meters.linBarZ, LIN_AXIS_Z, live.lzOut, METER_LIN_SCALE, linFlashEnv);
+  placeLabelAtBarTip(meterLabels.lz, meters.linBarZ, new THREE.Vector3(0, 0, 0.12));
+
+  meterLabels.lon.visible = linFlashEnv > 0.05 || m4l.linMag > p.linOnset.threshold * 0.35;
+  if (meterLabels.lon.visible) {
+    const lonPos = new THREE.Vector3(0, 0, Math.max(lzLen, 0.35) + linFlashEnv * 0.4);
+    placeMeterLabel(meterLabels.lon, lonPos, new THREE.Vector3(0, 0, 0.14));
+  }
+
+  const gyroFlashEnv = flashEnvelope(now - (state.motion.gyroFlashStart || 0), GYRO_FLASH_DECAY_MS);
+  const gyroTip = updateGyroPolarMeter(meters.gyroPolar, yaw, m4l.gyroMag, gyroFlashEnv);
+  meterLabels.gyro.visible = gyroFlashEnv > 0.05 || m4l.gyroMag > p.gyroOnset.threshold * 0.4;
+  if (meterLabels.gyro.visible) {
+    placeMeterLabel(meterLabels.gyro, gyroTip, new THREE.Vector3(0, 0, 0.14));
+  }
+
+  updateLiveHud(m4l, live);
 
   const piezoScaled = applyThresholdRatioUnsigned(
     sample.piezoEnv,
@@ -1366,9 +1799,7 @@ function updateThreeObject(sample) {
     p.piezo.ratio,
   );
   const piezoNormalized = clamp(piezoScaled / PIEZO_REFERENCE_MAX, 0, 1);
-  const color = piezoColor(piezoNormalized);
-  cubeMaterial.color.copy(color);
-  edgeLines.material.color.copy(color).lerp(new THREE.Color(0xffffff), 0.35);
+  chipMaterial.color.copy(piezoColor(piezoNormalized));
 }
 
 function render() {
@@ -1410,7 +1841,6 @@ function onResize() {
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
-  updateEdgeLineResolution();
   prepareAllCanvases();
   state.needsGraphRedraw = true;
   fitAppToWindow();
