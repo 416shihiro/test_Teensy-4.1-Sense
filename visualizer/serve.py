@@ -16,6 +16,35 @@ class VizHandler(SimpleHTTPRequestHandler):
     hub_host: str = "127.0.0.1"
     hub_port: int = 8765
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_POST(self) -> None:
+        if self.path != "/params":
+            self.send_error(404)
+            return
+        self._proxy_params_post()
+
+    def _proxy_params_post(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b""
+        conn = http.client.HTTPConnection(self.hub_host, self.hub_port, timeout=5)
+        try:
+            conn.request("POST", "/params", body=body, headers={"Content-Type": "application/json"})
+            upstream = conn.getresponse()
+            upstream.read()
+            self.send_response(upstream.status)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+        except OSError as exc:
+            self.send_error(502, f"hub unreachable: {exc}")
+        finally:
+            conn.close()
+
     def do_GET(self) -> None:
         if self.path == "/stream" or self.path.startswith("/stream?"):
             self._proxy_sse()

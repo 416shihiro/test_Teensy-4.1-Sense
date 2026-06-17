@@ -6,23 +6,18 @@
  * Serial DATA ax…gz / gx…gz are MPU6050 axes after mount correction below.
  * Viz, M4L, and motion math all use this same frame.
  *
- * Mount intent (acrylic tube on bow):
- *   +X = bow tip
- *   +Y = bow left (player's left hand side)
- *   +Z = sky / up
+ * Measured mount (acrylic tube, MPU6050, 2026-06) — bow labels vs chip telemetry:
+ *   bow +X tip  = chip -Y   (motion: lx_bow = -ay)
+ *   bow +Y left = chip -X   (motion: ly_bow = -ax)
+ *   bow +Z up   = chip +Z   (motion: lz_bow = az)
  *
  * Silicon → telemetry (sampleImu in main.cpp):
- *   ax, gx negated (CHIP_FLIP_X) — bow tip sign matches acrylic mount
+ *   ax, gx negated (CHIP_FLIP_X)
  *
- * Derived angles (motion_core.js / hi_motion_core.js), +X tip convention:
- *   Pitch — nod tip up/down (ω about +Y): atan2(-ax, hypot(ay, az))
- *   Roll  — lean sideways (ω about +X):   atan2(ay, az)
- *   Yaw   — twist (ω about +Z): gyro projected on gravity + integration
- *
- * Linear bow-frame remap (motion_core.js mapBowFrameLinear, after gravity subtract):
- *   bow +X tip  =  chip lx
- *   bow +Y left =  chip lz
- *   bow +Z up   =  chip ly
+ * Tilt (motion_core.js accelTilt) — bow-frame gravity (bx=-ay, by=-ax, bz=az):
+ *   pitch = nod tip (ω about bow left)  → atan2(bx, hypot(by, bz))
+ *   roll  = lean sideways (ω about tip)   → atan2(by, hypot(bx, bz))
+ *   tilt: rotate (ax,ay) by -motion.yaw (gyro-integrated) before pitch/roll
  */
 
 constexpr float kChipFlipAx = -1.0f;

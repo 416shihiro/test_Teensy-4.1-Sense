@@ -38,7 +38,7 @@ py -m http.server 4173
 | 経路 | 内容 |
 |------|------|
 | **USB Audio** | piezo L / mic R @ 44.1kHz → ASIO4ALL → Ableton Live |
-| **USB Serial** | `DATA` 20Hz（22 列、弓座標 ax…headingDeg）→ PC `serial_hub.py` |
+| **USB Serial** | `DATA` **100Hz**（22 列、弓座標 ax…headingDeg）→ PC `serial_hub.py` |
 | **hub 出力** | UDP 7400（M4L `udpreceive`）+ SSE :8765（visualizer Bridge） |
 
 hub は **XIAO リポ**の `scripts/serial_hub.py`。COM は hub か Web Serial のどちらか一方のみ。

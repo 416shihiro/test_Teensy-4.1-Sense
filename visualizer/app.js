@@ -9,18 +9,32 @@ import {
   PARAM_IDS,
   PARAM_SHORT,
   PARAM_SPEC,
+  PARAM_M4L_TARGET,
+  G01_OUTPUT_GROUPS,
+  G01_OUTPUT_IDS,
   applyThresholdRatio,
   applyThresholdRatioUnsigned,
   createDefaultDisplayParams,
+  createDefaultG01Params,
   createDefaultParams,
+  createDefaultUiPrefs,
+  displayRestoredFromStorage,
+  g01PiezoTo01,
   loadDisplayParams,
+  loadG01Params,
   loadParams,
+  loadUiPrefs,
+  paramsRestoredFromStorage,
+  persistSessionState,
   saveDisplayParams,
   saveParams,
+  saveUiPrefs,
   serializeForMax,
+  MOTION_MODE_DIRECT,
+  MOTION_MODE_TILT,
 } from "./params.js";
 import { createSerialFrameParser } from "./camera.js";
-import { createMotionState, processM4lMotion } from "./motion_core.js";
+import { createMotionState, processM4lMotion } from "./motion_core.js?v=20260620f";
 
 const GRAPH_SIZE = 240;
 const PIEZO_REFERENCE_MAX = 2400;
@@ -34,6 +48,13 @@ const PITCH_ROLL_REFERENCE = 1.2;
 const YAW_RATE_REFERENCE = 0.35;
 const LINEAR_REFERENCE = 2.2;
 const GRAVITY_MS2 = 9.81;
+// MUST match the Max patch object box: piezoEnv → scale 0 1000 0 127
+// piezoEnv is a peak-to-peak envelope (rest ≈ 0, hit threshold ≈ 280 in firmware),
+// so the floor MUST be ~0. The piezo graph below uses HI as a FIXED full-scale so the
+// displayed level always equals the absolute value the macro receives (no auto-zoom).
+// If you change the Max [scale] ceiling, change G01_PIEZO_SCALE_HI to the same value.
+const G01_PIEZO_SCALE_LO = 0;
+const G01_PIEZO_SCALE_HI = 1000;
 
 // Teensy firmware outputs MPU6050 chip frame (raw ax..gz, no remapping).
 // +X ≈ bow tip in acrylic tube. Graphs: red=X green=Y blue=Z.
@@ -73,7 +94,16 @@ function resolveBridgeStreamUrl() {
   return `${location.protocol}//${location.hostname}:8765/stream`;
 }
 
+function resolveBridgeParamsUrl() {
+  if (location.port === "4173") {
+    return `${location.origin}/params`;
+  }
+  return `${location.protocol}//${location.hostname}:8765/params`;
+}
+
 const BRIDGE_STREAM_URL = resolveBridgeStreamUrl();
+const BRIDGE_PARAMS_URL = resolveBridgeParamsUrl();
+let paramsPushTimer = null;
 
 const DEVICE_PROFILES = {
   teensy: {
@@ -98,8 +128,10 @@ const ui = {
   disconnectButton: document.querySelector("#disconnectButton"),
   demoButton: document.querySelector("#demoButton"),
   deviceProfileSelect: document.querySelector("#deviceProfileSelect"),
+  motionModeSelect: document.querySelector("#motionModeSelect"),
   deviceStatus: document.querySelector("#deviceStatus"),
   serialStatus: document.querySelector("#serialStatus"),
+  paramsM4lStatus: document.querySelector("#paramsM4lStatus"),
   browserStatus: document.querySelector("#browserStatus"),
   lastLineType: document.querySelector("#lastLineType"),
   rawLine: document.querySelector("#rawLine"),
@@ -208,7 +240,9 @@ const state = {
   },
   lastM4l: null,
   params: loadParams(),
+  g01: loadG01Params(),
   display: loadDisplayParams(),
+  uiPrefs: loadUiPrefs(),
   serialFrameParser: null,
   needsGraphRedraw: true,
 };
@@ -232,8 +266,117 @@ function setBrowserStatus() {
   }
 }
 
+function setParamsM4lStatus(mode, text) {
+  const el = ui.paramsM4lStatus;
+  if (!el) {
+    return;
+  }
+  el.className = `params-m4l-status params-m4l-${mode}`;
+  el.textContent = text;
+}
+
+function scheduleParamsPushToHub() {
+  if (!state.bridgeSource) {
+    return;
+  }
+  setParamsM4lStatus("pending", "M4L — 送信中…");
+  if (paramsPushTimer) {
+    clearTimeout(paramsPushTimer);
+  }
+  paramsPushTimer = setTimeout(pushParamsToHub, 80);
+}
+
+async function pushParamsToHub() {
+  if (!state.bridgeSource) {
+    setParamsM4lStatus("idle", "M4L — Bridge 未接続");
+    return;
+  }
+  try {
+    const res = await fetch(BRIDGE_PARAMS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(serializeForMax(state.params, state.g01)),
+    });
+    if (!res.ok) {
+      const hint =
+        res.status === 501 || res.status === 404
+          ? "hub 再起動"
+          : `HTTP ${res.status}`;
+      setStatus(`M4L params 送信失敗: ${hint}`, "error");
+      setParamsM4lStatus("error", `M4L — params NG (${hint})`);
+      if (ui.serialStatus && state.bridgeSource) {
+        ui.serialStatus.textContent = `Bridge · params NG (${res.status})`;
+        ui.serialStatus.style.color = "#f87171";
+      }
+      return;
+    }
+    setParamsM4lStatus("ok", "M4L — params→M4L OK");
+    if (ui.serialStatus && state.bridgeSource) {
+      ui.serialStatus.textContent = "Bridge · params→M4L OK";
+      ui.serialStatus.style.color = "#34d399";
+    }
+  } catch (err) {
+    const msg = err?.message ?? String(err);
+    setStatus(`M4L params 送信失敗: ${msg}`, "error");
+    setParamsM4lStatus("error", "M4L — params NG · hub?");
+    if (ui.serialStatus && state.bridgeSource) {
+      ui.serialStatus.textContent = "Bridge · params NG · hub 未起動?";
+      ui.serialStatus.style.color = "#f87171";
+    }
+  }
+}
+
+function persistVisualizerSettings() {
+  persistSessionState(state.params, state.display, state.uiPrefs, state.g01);
+  scheduleParamsPushToHub();
+}
+
+function showRestoredSettingsStatus() {
+  if (!paramsRestoredFromStorage && !displayRestoredFromStorage) {
+    return;
+  }
+  setStatus("前回のつまみ設定を復元しました", "ok");
+  window.setTimeout(() => {
+    if (!state.port && !state.bridgeSource) {
+      setLinkStatus({ mode: "none" });
+    }
+  }, 2800);
+}
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function applyUiPrefs() {
+  if (!ui.deviceProfileSelect) {
+    return;
+  }
+  const option = [...ui.deviceProfileSelect.options].find(
+    (entry) => entry.value === state.uiPrefs.deviceProfile,
+  );
+  if (option) {
+    ui.deviceProfileSelect.value = state.uiPrefs.deviceProfile;
+  }
+  if (ui.motionModeSelect) {
+    ui.motionModeSelect.value = state.uiPrefs.motionMode ?? MOTION_MODE_DIRECT;
+  }
+}
+
+function motionProcessMode() {
+  return state.uiPrefs.motionMode === MOTION_MODE_TILT ? MOTION_MODE_TILT : MOTION_MODE_DIRECT;
+}
+
+function isDirectMotionMode() {
+  return motionProcessMode() === MOTION_MODE_DIRECT;
+}
+
+function motionProcessOptions(extra = {}) {
+  const mode = motionProcessMode();
+  return {
+    integrateYaw: mode === MOTION_MODE_TILT,
+    mode,
+    ...extra,
+  };
 }
 
 function resetMotionState() {
@@ -246,10 +389,7 @@ function resetMotionState() {
 
 function processMotionSample(sample) {
   const dt = packetDeltaSeconds(sample);
-  state.lastM4l = processM4lMotion(sample, state.params, state.motion, {
-    integrateYaw: true,
-    dt,
-  });
+  state.lastM4l = processM4lMotion(sample, state.params, state.motion, motionProcessOptions({ dt }));
 }
 
 function packetDeltaSeconds(sample) {
@@ -283,7 +423,8 @@ function computeYawRate(sample) {
 function enrichM4lSample(sample) {
   return {
     ...sample,
-    ...(state.lastM4l ?? processM4lMotion(sample, state.params, state.motion, { integrateYaw: false })),
+    ...(state.lastM4l ??
+      processM4lMotion(sample, state.params, state.motion, motionProcessOptions({ integrateYaw: false }))),
   };
 }
 
@@ -296,21 +437,34 @@ function formatLiveRad(rad) {
   return `${sign}${rad.toFixed(2)}`;
 }
 
-function updateLiveHud(m4l, live) {
+function piezoEnvToG01127(env) {
+  const span = G01_PIEZO_SCALE_HI - G01_PIEZO_SCALE_LO || 1;
+  const t = (env - G01_PIEZO_SCALE_LO) / span;
+  return Math.round(clamp(t, 0, 1) * 127);
+}
+
+function updateLiveHud(m4l, live, isDirect, sample) {
   if (!ui.orientationHud) {
     return;
   }
   const gOn = m4l.gyroOnset ? "●" : "○";
   const lOn = m4l.linOnset ? "●" : "○";
+  const yawText = isDirect ? formatLiveRad(live.yawOut) : formatOrientationDeg(m4l.yaw);
+  const pz127 = piezoEnvToG01127(sample?.piezoEnv ?? 0);
+  const g01p = state.g01.piezo;
+  const pzGate = pz127 >= g01p.gateOn ? "●" : pz127 <= g01p.gateOff ? "○" : "◐";
+  const cc24 = Math.round(g01PiezoTo01(pz127, g01p) * 127);
   ui.orientationHud.innerHTML = `
     <span class="ori-live-label">→ Live</span>
-    <span class="ori-pitch">Pt <b>${formatLiveRad(live.pitchOut)}</b></span>
-    <span class="ori-roll">Rl <b>${formatLiveRad(live.rollOut)}</b></span>
-    <span class="ori-yaw">Yw <b>${formatOrientationDeg(m4l.yaw)}</b></span>
+    <span class="ori-pitch">Pt <b>${formatLiveRad(live.pitchOut)}</b> <small>Macro2 Grain(回転角)</small></span>
+    <span class="ori-roll">Rl <b>${formatLiveRad(live.rollOut)}</b> <small>Macro1 FilePos</small></span>
+    <span class="ori-yaw">Yw <b>${yawText}</b> <small>Macro3 FMfreq(ひねり)</small></span>
+    <span class="ori-mag">lX <b>${formatLiveRad(live.lxOut)}</b> <small>Macro5 Release</small></span>
     <span class="ori-mag">|ω| <b>${m4l.gyroMag.toFixed(2)}</b></span>
     <span class="ori-mag">|a| <b>${m4l.linMag.toFixed(2)}</b></span>
-    <span class="ori-onset gyro-onset">gOn ${gOn}</span>
+    <span class="ori-onset gyro-onset">gOn ${gOn} <small>→NoteOn</small></span>
     <span class="ori-onset lin-onset">lOn ${lOn}</span>
+    <span class="ori-piezo">Pz <b>${pz127}</b> Gate ${pzGate} Vel/Macro4 <b>${cc24}</b></span>
   `;
 }
 
@@ -498,6 +652,7 @@ async function disconnectSerial() {
   }
   ui.disconnectButton.disabled = true;
   setLinkStatus({ mode: "none" });
+  setParamsM4lStatus("idle", "M4L — Bridge 未接続");
 }
 
 async function connectBridge() {
@@ -547,6 +702,7 @@ async function connectBridge() {
     });
     ui.serialStatus.textContent = "Bridge · waiting for DATA…";
     ui.serialStatus.style.color = "#fbbf24";
+    pushParamsToHub();
   };
 
   source.onmessage = (event) => {
@@ -577,6 +733,7 @@ async function connectBridge() {
       ui.bridgeButton.disabled = false;
     }
     ui.disconnectButton.disabled = true;
+    setParamsM4lStatus("idle", "M4L — Bridge 未接続");
   };
 }
 
@@ -879,13 +1036,18 @@ function magnitudeGraphMax() {
   for (const value of state.history.linMag) {
     max = Math.max(max, value);
   }
+  max = Math.max(
+    max,
+    state.params.gyroOnset.threshold,
+    state.params.linOnset.threshold,
+  );
+  if (max < 0.5) {
+    return Math.max(max * 2.5, 0.5);
+  }
   if (max < 8) {
-    return Math.max(max * 2.5, 5);
+    return Math.max(max * 1.35, max + 0.25);
   }
-  if (max < 80) {
-    return Math.max(max * 1.5, 40);
-  }
-  return Math.max(max * 1.08, 400);
+  return Math.max(max * 1.12, max + 1);
 }
 
 function drawPitchRollGraph() {
@@ -967,7 +1129,7 @@ function drawLinearGraph() {
   drawSeries(ctx, state.history.ly, "#22c55e", min, max, area);
   drawSeries(ctx, state.history.lz, "#3b82f6", min, max, area);
   drawGraphAxisLegend(ctx, area, [
-    { text: "lX tip", color: "#ef4444" },
+    { text: "lX→Macro5 Release", color: "#ef4444" },
     { text: "lY left", color: "#22c55e" },
     { text: "lZ up", color: "#3b82f6" },
   ]);
@@ -1026,30 +1188,43 @@ function drawMagnitudeGraph() {
   drawOnsetTicks(ctx, state.history.linOnset, area, "rgba(34, 211, 238, 0.9)", 10);
 }
 
-function piezoGraphMax() {
-  let max = 0;
-  for (const value of state.history.piezoEnv) {
-    max = Math.max(max, value);
-  }
-  for (const value of state.history.piezoPeak) {
-    max = Math.max(max, value);
-  }
-  if (max < 8) {
-    return Math.max(max * 2.5, 5);
-  }
-  if (max < 80) {
-    return Math.max(max * 1.5, 40);
-  }
-  return Math.max(max * 1.08, 400);
+function drawPiezoGateLine(ctx, area, value127, color, label) {
+  const f = clamp(value127 / 127, 0, 1);
+  const y = area.top + area.height - f * area.height;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.setLineDash([3, 3]);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(area.left, y);
+  ctx.lineTo(area.left + area.width, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+  ctx.fillStyle = color;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "bottom";
+  ctx.fillText(label, area.left + area.width - 2, y - 1);
+  ctx.restore();
 }
 
 function drawPiezoGraph() {
   const { ctx, width, height } = prepareCanvas2d(ui.piezoCanvas);
   const area = plotArea(width, height);
-  const max = piezoGraphMax();
+  // Fixed full-scale axis tied to the M4L macro scale (scale 0 .. G01_PIEZO_SCALE_HI 0 127).
+  // The graph is NOT auto-zoomed, so the plotted height always equals the absolute level the
+  // macro receives. Values above full-scale clamp at the top (= macro saturated at 127).
+  const max = G01_PIEZO_SCALE_HI > 0 ? G01_PIEZO_SCALE_HI : 1;
   ctx.clearRect(0, 0, width, height);
-  drawYAxisScale(ctx, area, 0, max, { variable: true });
+  drawGraphCaption(ctx, "Pz → Gate · Vel · Macro4 Vol", "#22d3ee", area.left, area.top + 2);
+  // Axis labelled in macro 0-127 units (fixed) instead of the raw envelope max.
+  drawYAxisScale(ctx, area, 0, 127, { variable: false });
   drawGrid(ctx, area, 4);
+
+  const g01p = state.g01.piezo;
+  drawPiezoGateLine(ctx, area, g01p.gateOn, "rgba(52, 211, 153, 0.65)", "GOn");
+  drawPiezoGateLine(ctx, area, g01p.gateOff, "rgba(148, 163, 184, 0.55)", "GOff");
+
   drawSeries(ctx, state.history.piezoEnv, "#22d3ee", 0, max, area);
   drawSeries(ctx, state.history.piezoPeak, "#fb923c", 0, max, area);
 
@@ -1586,14 +1761,15 @@ meters.linBarY.position.set(0, 0, 0);
 meters.linBarZ.position.set(0, 0, 0);
 
 const meterLabels = {
-  pt: createMeterLabel("Pt ω", "#ef4444", 0.24),
-  rl: createMeterLabel("Rl ω", "#22c55e", 0.24),
-  yw: createMeterLabel("Yw ω", "#60a5fa", 0.24),
-  gyro: createMeterLabel("gOn", "#fb923c", 0.22),
+  pt: createMeterLabel("Pt→Macro2 Grain(回転角)", "#ef4444", 0.24),
+  rl: createMeterLabel("Rl→Macro1 FilePos", "#22c55e", 0.24),
+  yw: createMeterLabel("Yw→Macro3 FMfreq(ひねり)", "#60a5fa", 0.24),
+  gyro: createMeterLabel("gOn→NoteOn", "#fb923c", 0.22),
   lon: createMeterLabel("lOn", "#22d3ee", 0.24),
-  lx: createMeterLabel("lX", "#ef4444", 0.22),
+  lx: createMeterLabel("lX→Macro5 Release", "#ef4444", 0.22),
   ly: createMeterLabel("lY", "#22c55e", 0.22),
   lz: createMeterLabel("lZ", "#3b82f6", 0.22),
+  pz: createMeterLabel("Pz→Macro4 Vol", "#22d3ee", 0.22),
 };
 
 const ARC_OFFSETS = {
@@ -1773,15 +1949,16 @@ function arcVisuals(omega, alpha) {
 
 function updateThreeObject(sample) {
   const frameDt = frameDeltaSeconds();
-  integrateYaw(sample, frameDt);
+  const isDirect = isDirectMotionMode();
 
   const m4l =
     state.lastM4l ??
-    processM4lMotion(sample, state.params, state.motion, { integrateYaw: false });
+    processM4lMotion(sample, state.params, state.motion, motionProcessOptions({ integrateYaw: false }));
   const p = state.params;
   const live = {
     pitchOut: applyThresholdRatio(m4l.pitch, p.rotX.threshold, p.rotX.ratio),
     rollOut: applyThresholdRatio(m4l.roll, p.rotZ.threshold, p.rotZ.ratio),
+    yawOut: applyThresholdRatio(m4l.yawRate, p.rotY.threshold, p.rotY.ratio),
     lxOut: applyThresholdRatio(m4l.lx, p.linX.threshold, p.linX.ratio),
     lyOut: applyThresholdRatio(m4l.ly, p.linY.threshold, p.linY.ratio),
     lzOut: applyThresholdRatio(m4l.lz, p.linZ.threshold, p.linZ.ratio),
@@ -1794,25 +1971,45 @@ function updateThreeObject(sample) {
     state.motion.linFlashStart = performance.now();
   }
 
-  const pitchDyn = rotArcDynamics(
-    state.motion.lastPitch ?? m4l.pitch,
-    m4l.pitch,
-    state.motion.lastPitchRate ?? 0,
-    frameDt,
-  );
-  state.motion.lastPitch = m4l.pitch;
-  state.motion.lastPitchRate = pitchDyn.rate;
+  let pitchOmega;
+  let pitchAlpha;
+  let rollOmega;
+  let rollAlpha;
+  if (isDirect) {
+    pitchOmega = m4l.pitch;
+    pitchAlpha =
+      frameDt > 0 ? (pitchOmega - (state.motion.lastPitchRate ?? pitchOmega)) / frameDt : 0;
+    state.motion.lastPitch = pitchOmega;
+    state.motion.lastPitchRate = pitchOmega;
+    rollOmega = m4l.roll;
+    rollAlpha = frameDt > 0 ? (rollOmega - (state.motion.lastRollRate ?? rollOmega)) / frameDt : 0;
+    state.motion.lastRoll = rollOmega;
+    state.motion.lastRollRate = rollOmega;
+  } else {
+    const pitchDyn = rotArcDynamics(
+      state.motion.lastPitch ?? m4l.pitch,
+      m4l.pitch,
+      state.motion.lastPitchRate ?? 0,
+      frameDt,
+    );
+    state.motion.lastPitch = m4l.pitch;
+    state.motion.lastPitchRate = pitchDyn.rate;
+    pitchOmega = pitchDyn.rate;
+    pitchAlpha = pitchDyn.accel;
 
-  const rollDyn = rotArcDynamics(
-    state.motion.lastRoll ?? m4l.roll,
-    m4l.roll,
-    state.motion.lastRollRate ?? 0,
-    frameDt,
-  );
-  state.motion.lastRoll = m4l.roll;
-  state.motion.lastRollRate = rollDyn.rate;
+    const rollDyn = rotArcDynamics(
+      state.motion.lastRoll ?? m4l.roll,
+      m4l.roll,
+      state.motion.lastRollRate ?? 0,
+      frameDt,
+    );
+    state.motion.lastRoll = m4l.roll;
+    state.motion.lastRollRate = rollDyn.rate;
+    rollOmega = rollDyn.rate;
+    rollAlpha = rollDyn.accel;
+  }
 
-  const pitchVis = smoothArcVisuals("pitch", arcVisuals(pitchDyn.rate, pitchDyn.accel), frameDt);
+  const pitchVis = smoothArcVisuals("pitch", arcVisuals(pitchOmega, pitchAlpha), frameDt);
   updateArcArrowMeter(
     meters.pitchArc,
     "pitch",
@@ -1830,7 +2027,7 @@ function updateThreeObject(sample) {
   );
   placeMeterLabel(meterLabels.pt, pitchLabelPos, new THREE.Vector3(0, 0.14, 0));
 
-  const rollVis = smoothArcVisuals("roll", arcVisuals(rollDyn.rate, rollDyn.accel), frameDt);
+  const rollVis = smoothArcVisuals("roll", arcVisuals(rollOmega, rollAlpha), frameDt);
   updateArcArrowMeter(
     meters.rollArc,
     "roll",
@@ -1843,8 +2040,11 @@ function updateThreeObject(sample) {
   const rollLabelPos = arcPointOnPlane("roll", rollVis.sweep * 0.52, rollVis.radius, ARC_OFFSETS.roll);
   placeMeterLabel(meterLabels.rl, rollLabelPos, new THREE.Vector3(0.14, 0, 0));
 
-  const yaw = state.motion.yaw;
-  const yawOmega = computeYawRate(sample);
+  const yaw = isDirect ? (state.motion.yawDisplay ?? 0) : state.motion.yaw;
+  const yawOmega = isDirect ? m4l.yawRate : computeYawRate(sample);
+  if (isDirect) {
+    state.motion.yawDisplay = yaw + yawOmega * frameDt;
+  }
   const yawAlpha =
     frameDt > 0 ? (yawOmega - (state.motion.lastYawOmega ?? yawOmega)) / frameDt : 0;
   state.motion.lastYawOmega = yawOmega;
@@ -1881,7 +2081,9 @@ function updateThreeObject(sample) {
   const lzLen = updateLinAxisBar(meters.linBarZ, LIN_AXIS_Z, live.lzOut, METER_LIN_SCALE, linFlashEnv);
   placeLabelAtBarTip(meterLabels.lz, meters.linBarZ, new THREE.Vector3(0, 0, 0.12));
 
-  meterLabels.lon.visible = linFlashEnv > 0.05 || m4l.linMag > p.linOnset.threshold * 0.35;
+  meterLabels.lon.visible =
+    linFlashEnv > 0.05 ||
+    (m4l.linOnsetMag ?? m4l.linMag) > p.linOnset.threshold * 0.35;
   if (meterLabels.lon.visible) {
     const lonPos = new THREE.Vector3(0, 0, Math.max(lzLen, 0.35) + linFlashEnv * 0.4);
     placeMeterLabel(meterLabels.lon, lonPos, new THREE.Vector3(0, 0, 0.14));
@@ -1894,7 +2096,14 @@ function updateThreeObject(sample) {
     placeMeterLabel(meterLabels.gyro, gyroTip, new THREE.Vector3(0, 0, 0.14));
   }
 
-  updateLiveHud(m4l, live);
+  const pz127 = piezoEnvToG01127(sample.piezoEnv ?? 0);
+  meterLabels.pz.visible = pz127 > state.g01.piezo.gateOff;
+  if (meterLabels.pz.visible) {
+    const pzPos = new THREE.Vector3(0, -(CHIP_HALF.y + 0.42), 0);
+    placeMeterLabel(meterLabels.pz, pzPos, new THREE.Vector3(0, -0.12, 0));
+  }
+
+  updateLiveHud(m4l, live, isDirect, sample);
 
   const piezoScaled = applyThresholdRatioUnsigned(
     sample.piezoEnv,
@@ -2024,9 +2233,18 @@ window.addEventListener("load", () => {
   if (bridgeParam !== "0") {
     connectBridge();
   }
+  window.setTimeout(showRestoredSettingsStatus, 600);
+});
+window.addEventListener("beforeunload", persistVisualizerSettings);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    persistVisualizerSettings();
+  }
 });
 ui.deviceProfileSelect?.addEventListener("change", () => {
   const device = getSelectedDeviceProfile();
+  state.uiPrefs.deviceProfile = ui.deviceProfileSelect?.value ?? state.uiPrefs.deviceProfile;
+  saveUiPrefs(state.uiPrefs);
   if (ui.bridgeButton) {
     ui.bridgeButton.textContent = `Bridge · ${device.short}`;
   }
@@ -2034,11 +2252,17 @@ ui.deviceProfileSelect?.addEventListener("change", () => {
     renderDeviceStatus(device.id, "待機中");
   }
 });
+ui.motionModeSelect?.addEventListener("change", () => {
+  state.uiPrefs.motionMode = ui.motionModeSelect?.value ?? MOTION_MODE_DIRECT;
+  saveUiPrefs(state.uiPrefs);
+  resetMotionState();
+});
 ui.connectButton.addEventListener("click", connectSerial);
 if (ui.bridgeButton) {
   ui.bridgeButton.addEventListener("click", connectBridge);
 }
 if (ui.deviceProfileSelect) {
+  applyUiPrefs();
   ui.deviceProfileSelect.dispatchEvent(new Event("change"));
 }
 ui.disconnectButton.addEventListener("click", disconnectSerial);
@@ -2083,8 +2307,11 @@ function formatParamValue(id, key, value) {
   if (key === "threshold" && id === "rotY") {
     return value.toFixed(1);
   }
-  if (key === "threshold" && (id === "gyroOnset" || id === "linOnset")) {
+  if (key === "threshold" && id === "gyroOnset") {
     return value.toFixed(2);
+  }
+  if (key === "threshold" && id === "linOnset") {
+    return value >= 10 ? value.toFixed(1) : value.toFixed(2);
   }
   if (key === "ratio" && (id === "gyroOnset" || id === "linOnset")) {
     return value.toFixed(2);
@@ -2114,7 +2341,7 @@ function initParamControls() {
 
   const refreshExport = () => {
     if (exportPre) {
-      exportPre.textContent = JSON.stringify(serializeForMax(state.params), null, 2);
+      exportPre.textContent = JSON.stringify(serializeForMax(state.params, state.g01), null, 2);
     }
   };
 
@@ -2130,7 +2357,7 @@ function initParamControls() {
       const value = Number.parseFloat(input.value);
       state.params[id][key] = value;
       syncDial(id, key, input, pointer, readout);
-      saveParams(state.params);
+      persistVisualizerSettings();
       refreshExport();
       if (id === "gyroOnset" || id === "linOnset") {
         state.needsGraphRedraw = true;
@@ -2138,6 +2365,16 @@ function initParamControls() {
     });
     dialRefs.push({ id, key, input, pointer, readout });
     syncDial(id, key, input, pointer, readout);
+  };
+
+  // Lay dials out in up to 2 rows; group width grows with the column count
+  // so a 2-dial group is narrow and a 6-dial group is wider (proportional).
+  const sizeParamGroup = (groupEl, dialsEl) => {
+    const count = dialsEl.childElementCount;
+    const cols = Math.max(1, Math.ceil(count / 2));
+    dialsEl.style.setProperty("--dial-cols", String(cols));
+    groupEl.style.flexGrow = String(cols);
+    groupEl.style.setProperty("--dial-cols", String(cols));
   };
 
   for (const group of PARAM_GROUPS) {
@@ -2148,6 +2385,14 @@ function initParamControls() {
     const title = document.createElement("span");
     title.className = "param-group-label";
     title.textContent = group.label;
+    if (group.ids.includes("mic")) {
+      const unconnected = document.createElement("span");
+      unconnected.className = "unconnected-badge";
+      unconnected.textContent = "(unconnected)";
+      title.appendChild(document.createElement("br"));
+      title.appendChild(unconnected);
+      groupEl.classList.add("param-group-unconnected");
+    }
     groupEl.appendChild(title);
 
     const dials = document.createElement("div");
@@ -2162,7 +2407,7 @@ function initParamControls() {
         const dial = document.createElement("label");
         dial.className = "param-dial";
         dial.style.setProperty("--dial-color", color);
-        dial.title = `${spec.label} ${key}`;
+        dial.title = `${spec.label} ${key}${PARAM_M4L_TARGET[id] ? ` · ${PARAM_M4L_TARGET[id]}` : ""}`;
 
         const keyLabel = document.createElement("span");
         keyLabel.className = "param-dial-key";
@@ -2197,11 +2442,93 @@ function initParamControls() {
         dial.appendChild(ring);
         dial.appendChild(keyLabel);
         dial.appendChild(readout);
+        if (key === "threshold" && PARAM_M4L_TARGET[id]) {
+          const m4lBadge = document.createElement("span");
+          m4lBadge.className = "param-dial-m4l";
+          m4lBadge.textContent = PARAM_M4L_TARGET[id];
+          dial.appendChild(m4lBadge);
+        }
         dials.appendChild(dial);
         bindDial(id, key, input, pointer, readout);
       }
     }
 
+    sizeParamGroup(groupEl, dials);
+    groupEl.appendChild(dials);
+    root.appendChild(groupEl);
+  }
+
+  const g01DialRefs = [];
+
+  for (const id of G01_OUTPUT_IDS) {
+    const groupSpec = G01_OUTPUT_GROUPS[id];
+    const groupEl = document.createElement("div");
+    groupEl.className = "param-group param-group-g01";
+    groupEl.style.setProperty("--group-color", groupSpec.color);
+
+    const title = document.createElement("span");
+    title.className = "param-group-label";
+    title.textContent = `G01 ${groupSpec.label}`;
+    groupEl.appendChild(title);
+
+    const dials = document.createElement("div");
+    dials.className = "param-group-dials";
+
+    for (const [key, field] of Object.entries(groupSpec.fields)) {
+      const dial = document.createElement("label");
+      dial.className = "param-dial";
+      dial.style.setProperty("--dial-color", groupSpec.color);
+      dial.title = `${groupSpec.label} ${field.label}`;
+
+      const keyLabel = document.createElement("span");
+      keyLabel.className = "param-dial-key";
+      keyLabel.textContent = field.short;
+
+      const ring = document.createElement("div");
+      ring.className = "param-dial-ring";
+
+      const pointer = document.createElement("div");
+      pointer.className = "param-dial-pointer";
+
+      const input = document.createElement("input");
+      input.type = "range";
+      input.className = "param-dial-input";
+      input.min = String(field.min);
+      input.max = String(field.max);
+      input.step = String(field.step);
+      input.value = String(state.g01[id][key]);
+
+      const readout = document.createElement("output");
+      readout.className = "param-dial-value";
+
+      const syncG01Dial = () => {
+        const value = Number.parseFloat(input.value);
+        pointer.style.setProperty(
+          "--dial-angle",
+          `${dialAngleDeg(value, field.min, field.max)}deg`,
+        );
+        readout.textContent = String(Math.round(value));
+      };
+
+      input.addEventListener("input", () => {
+        const value = Number.parseFloat(input.value);
+        state.g01[id][key] = value;
+        syncG01Dial();
+        persistVisualizerSettings();
+        refreshExport();
+      });
+
+      ring.appendChild(pointer);
+      dial.appendChild(input);
+      dial.appendChild(ring);
+      dial.appendChild(keyLabel);
+      dial.appendChild(readout);
+      dials.appendChild(dial);
+      g01DialRefs.push({ id, key, input, pointer, readout, field, syncG01Dial });
+      syncG01Dial();
+    }
+
+    sizeParamGroup(groupEl, dials);
     groupEl.appendChild(dials);
     root.appendChild(groupEl);
   }
@@ -2268,7 +2595,7 @@ function initParamControls() {
       const value = Number.parseFloat(input.value);
       state.display[id] = value;
       syncDisplayDial();
-      saveDisplayParams(state.display);
+      persistVisualizerSettings();
       applyDisplayFilter();
     });
 
@@ -2276,17 +2603,22 @@ function initParamControls() {
     syncDisplayDial();
   }
 
+  sizeParamGroup(displayGroupEl, displayDials);
   displayGroupEl.appendChild(displayDials);
   root.appendChild(displayGroupEl);
 
   document.querySelector("#paramResetButton")?.addEventListener("click", () => {
     state.params = createDefaultParams();
+    state.g01 = createDefaultG01Params();
     state.display = createDefaultDisplayParams();
-    saveParams(state.params);
-    saveDisplayParams(state.display);
+    persistVisualizerSettings();
     for (const ref of dialRefs) {
       ref.input.value = String(state.params[ref.id][ref.key]);
       syncDial(ref.id, ref.key, ref.input, ref.pointer, ref.readout);
+    }
+    for (const ref of g01DialRefs) {
+      ref.input.value = String(state.g01[ref.id][ref.key]);
+      ref.syncG01Dial();
     }
     for (const ref of displayDialRefs) {
       ref.input.value = String(state.display[ref.id]);
@@ -2297,7 +2629,7 @@ function initParamControls() {
   });
 
   document.querySelector("#paramCopyButton")?.addEventListener("click", async () => {
-    const text = JSON.stringify(serializeForMax(state.params), null, 2);
+    const text = JSON.stringify(serializeForMax(state.params, state.g01), null, 2);
     try {
       await navigator.clipboard.writeText(text);
       setStatus("M4L params copied", "ok");

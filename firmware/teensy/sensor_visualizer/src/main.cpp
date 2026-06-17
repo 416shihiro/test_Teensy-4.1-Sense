@@ -18,7 +18,7 @@ constexpr uint8_t kMicPin = A1;
 
 constexpr uint32_t kSerialBaud = 115200;
 constexpr uint32_t kImuIntervalMs = 10;
-constexpr uint32_t kPrintIntervalMs = 50;
+constexpr uint32_t kPrintIntervalMs = 10;  // 100Hz DATA (match IMU sample rate)
 
 constexpr float kPiezoAlpha = 0.10f;
 constexpr float kPiezoPeakDecay = 0.96f;

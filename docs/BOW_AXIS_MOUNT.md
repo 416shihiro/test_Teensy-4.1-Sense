@@ -2,48 +2,61 @@
 
 ## Physical mount (acrylic tube on bow)
 
-- Telemetry `DATA` ax…gz / gx…gz are **raw MPU6050 chip axes** (no firmware remapping).
-- Mount intent: **+X = bow tip**, **+Y = bow left**, **+Z = sky / up** (match by eye in the acrylic tube).
+Telemetry `DATA` ax…gz / gx…gz: MPU6050 chip axes after `mapChipAccelX` / `mapChipGyroX` in firmware.
 
-## Chip frame (serial + M4L + viz)
+**Measured 2026-06 (user verify):** silkscreen bow labels vs chip axes:
 
-| Axis | Intent |
-|------|--------|
-| **+X** | Bow tip (pink arrow in 3D preview) |
-| **+Y** | Bow left (player's left-hand side) |
-| **+Z** | Sky / up |
+| Bow label | Chip axis |
+|-----------|-----------|
+| **+X tip** (pink arrow) | **-Y** chip |
+| **+Y left** | **-X** chip |
+| **+Z up** | **+Z** chip |
 
 Documented in `firmware/teensy/sensor_visualizer/src/chip_frame.h`.
 
-## Derived angles (motion_core.js / hi_motion_core.js)
+## Linear accel (viz + M4L)
 
-Assumes +X tip convention:
+After gravity subtract in chip frame (`motion_core.js` / `hi_motion_core.js`):
 
-| Param | Meaning | ω axis |
-|-------|---------|--------|
-| **Pitch** (rotX) | Nod tip up/down | +Y |
-| **Roll** (rotZ) | Lean sideways | +X |
-| **Yaw** (rotY) | Twist (integrated) | +Z |
+| Bow | Formula |
+|-----|---------|
+| Lin tip (red) | `lx = -ay` |
+| Lin left (green) | `ly = -ax` |
+| Lin up (blue) | `lz = az` |
+
+## Pitch / Roll
+
+Bow-frame gravity: `bx=-ay`, `by=-ax`, `bz=az` after rotating chip `(ax,ay)` by **integrated gyro yaw** (`motion.yaw`).
 
 ```
-pitch = atan2(-ax, hypot(ay, az))
-roll  = atan2(ay, az)
+pitch = atan2(bx, hypot(by, bz))   // nod tip
+roll  = atan2(by, hypot(bx, bz))   // lean sideways
 ```
 
-## 3D preview (browser viz)
+| Param | Meaning |
+|-------|---------|
+| **Pitch** (rotX) | Nod tip up/down |
+| **Roll** (rotZ) | Lean sideways |
+| **Yaw** (rotY) | Twist (gyro on gravity) |
 
-- Sensor **fixed** at origin; axes = chip X/Y/Z (red/green/blue).
-- Pink arrow fixed on **+X**.
-- Bars / rings show **values sent to Live** (after threshold), not gravity tilt.
+## 3D preview
+
+- Fixed chip axes at origin: red=X, green=Y, blue=Z (MPU6050 chip).
+- Pink arrow = bow **tip** direction (along chip **-Y**).
+- Linear bars use **bow** labels (tip/left/up) after `mapBowFrameLinear`.
 
 ## Verify
 
-1. Bow level: note which ax/ay/az ≈ ±9.81 — confirms chip orientation.
-2. Nod tip: **Pt** bar (red) moves; tune rotX threshold until it feels right.
-3. If one axis sign is wrong: flip that axis in `chip_frame.h` (firmware) and keep viz/M4L in sync.
+1. Level: **az ≈ +9.8**, ax/ay ≈ 0.
+2. **Tip+** (弓先方向) → **赤 Lin tip** のみ +.
+3. **左+** → **緑 Lin left** のみ +.
+4. **Pitch**（先を上下）→ **Pitch** リングのみ（Roll が主に動かない）.
+5. **Roll**（横に傾ける）→ **Roll** リングのみ.
+
+符号が逆なら `chip_frame.h` の `kChipFlipAx` または map の符号を1軸だけ反転。
 
 ## Graph colors
 
-- Red = X
-- Green = Y
-- Blue = Z
+- Red = Lin tip
+- Green = Lin left
+- Blue = Lin up

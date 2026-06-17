@@ -361,12 +361,54 @@ button:disabled {
   font-size: clamp(0.58rem, 1.3vh, 0.72rem);
 }
 
+.tuning-head-meta {
+  flex: 1 1 auto;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.params-m4l-status {
+  display: inline-block;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: clamp(0.52rem, 1.1vh, 0.65rem);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.params-m4l-idle {
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.25);
+}
+
+.params-m4l-pending {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.params-m4l-ok {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.14);
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.params-m4l-error {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
 .param-strip {
   display: flex;
-  flex-wrap: nowrap;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 0.12rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: stretch;
+  gap: 0.16rem 0.12rem;
   overflow: hidden;
   padding: 0.12rem 0 0.04rem;
   flex: 0 0 auto;
@@ -374,8 +416,6 @@ button:disabled {
 }
 
 .param-group-display {
-  margin-left: auto;
-  flex: 0 0 auto;
   border-left-color: #f472b6;
 }
 
@@ -392,8 +432,9 @@ button:disabled {
   border-left: 2px solid var(--group-color);
   background: var(--panel-glass-inner);
   border-radius: 0.35rem;
-  flex: 1 1 0;
-  min-width: 0;
+  /* grow proportional to dial columns (set inline via --dial-cols) */
+  flex: var(--dial-cols, 1) 1 auto;
+  min-width: calc(var(--dial-cols, 1) * clamp(26px, 3.6vw, 38px));
 }
 
 .param-group-label {
@@ -401,13 +442,21 @@ button:disabled {
   font-weight: 700;
   color: var(--group-color);
   letter-spacing: 0.03em;
-  line-height: 1;
+  line-height: 1.12;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+  max-width: 100%;
 }
 
 .param-group-dials {
-  display: flex;
-  gap: 0.08rem;
+  display: grid;
+  grid-template-rows: repeat(2, auto);
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 0.06rem 0.08rem;
   justify-content: center;
+  justify-items: center;
   width: 100%;
 }
 
@@ -471,6 +520,46 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.param-dial-m4l {
+  display: block;
+  margin-top: 0.04rem;
+  font-size: clamp(0.42rem, 0.9vh, 0.52rem);
+  font-weight: 600;
+  color: #fbbf24;
+  line-height: 1.1;
+  max-width: 4.2rem;
+  text-align: center;
+  white-space: normal;
+}
+
+.param-group-g01 .param-group-label {
+  color: #fbbf24;
+  font-weight: 700;
+}
+
+.unconnected-badge {
+  display: inline-block;
+  padding: 0.02rem 0.28rem;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  border-radius: 0.25rem;
+  font-size: clamp(0.42rem, 0.9vh, 0.52rem);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.1);
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.panel-header-mini h2 .unconnected-badge {
+  margin-left: 0.3rem;
+  vertical-align: middle;
+}
+
+.param-group-unconnected .param-dial {
+  opacity: 0.55;
 }
 
 .param-export-wrap {

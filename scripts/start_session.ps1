@@ -1,5 +1,10 @@
-# Human Instrument session: serial_hub + visualizer + browser
+# Human Instrument session: serial_hub + visualizer + browser (Bridge mode)
 # Usage: powershell -File scripts\start_session.ps1
+#        powershell -File scripts\start_session.ps1 -Port COM9
+
+param(
+    [string]$Port = "COM8"
+)
 
 $ErrorActionPreference = "Stop"
 $TeensyRoot = Split-Path -Parent $PSScriptRoot
@@ -17,12 +22,13 @@ if (-not (Test-Path $VizRoot)) {
 }
 
 Write-Host "=== Human Instrument session ==="
-Write-Host "1. serial_hub  COM8 -> UDP 7400 + SSE :8765"
+Write-Host "1. serial_hub  $Port -> UDP 7400 + SSE :8765"
 Write-Host "2. visualizer  $VizUrl"
-Write-Host "3. Live M4L    udpreceive 7400"
+Write-Host "3. viz UI      click Connect Bridge (not Connect Serial)"
+Write-Host "4. Live M4L    udpreceive 7400"
 Write-Host ""
 
-$hubCmd = "Set-Location '$HubRoot'; python scripts\serial_hub.py --port COM8 --baud 115200 --udp-port 7400 --quiet"
+$hubCmd = "Set-Location '$HubRoot'; python scripts\serial_hub.py --port $Port --baud 115200 --udp-port 7400 --quiet"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $hubCmd -WindowStyle Minimized
 
 Start-Sleep -Seconds 2
@@ -34,3 +40,4 @@ Start-Sleep -Seconds 1
 Start-Process $VizUrl
 
 Write-Host "Started. Browser: $VizUrl"
+Write-Host "Hub and Viz windows are minimized on the taskbar."

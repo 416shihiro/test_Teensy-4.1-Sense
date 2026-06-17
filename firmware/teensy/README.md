@@ -21,7 +21,7 @@ pio run --project-dir firmware/teensy/sensor_visualizer -t upload
 ```
 
 - **USB Audio**: piezo L / mic R @ 44.1kHz → Live（ASIO4ALL）
-- **Serial**: `DATA` 20Hz（22 列、MPU6050 チップ生座標 `chip_frame.h`）
+- **Serial**: `DATA` **100Hz**（22 列、MPU6050 チップ生座標 `chip_frame.h`）
 - 手順: [`docs/USB_AUDIO_SETUP.md`](../../docs/USB_AUDIO_SETUP.md)
 - 弓軸: [`docs/BOW_AXIS_MOUNT.md`](../../docs/BOW_AXIS_MOUNT.md)
 

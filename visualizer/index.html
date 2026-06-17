@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SHIHIRO Human Inst Sensor Viz ver.20260617a</title>
-    <link rel="stylesheet" href="./styles.css?v=20260618r" />
+    <title>SHIHIRO Human Inst Sensor Viz ver.20260620f</title>
+    <link rel="stylesheet" href="./styles.css?v=20260620f" />
     <script type="importmap">
       {
         "imports": {
@@ -19,7 +19,7 @@
     <div class="app-shell" id="appShell">
       <div class="app-header">
         <header class="topbar">
-          <h1><span id="appTitleText" class="app-title-text">SHIHIRO Human Inst Sensor Viz</span> <span class="app-version">ver.20260617a</span></h1>
+          <h1><span id="appTitleText" class="app-title-text">SHIHIRO Human Inst Sensor Viz</span> <span class="app-version">ver.20260620f</span></h1>
           <div class="actions">
             <button id="bridgeButton" class="btn-bridge">Bridge · Teensy</button>
             <button id="connectButton" class="btn-serial">Serial Direct</button>
@@ -29,6 +29,13 @@
               <select id="deviceProfileSelect" aria-label="Device profile">
                 <option value="teensy" selected>Teensy 4.1</option>
                 <option value="xiao">XIAO ESP32 S3</option>
+              </select>
+            </label>
+            <label class="device-label">
+              Motion
+              <select id="motionModeSelect" aria-label="Motion processing mode">
+                <option value="direct" selected>Direct ω</option>
+                <option value="tilt">Tilt legacy</option>
               </select>
             </label>
             <button id="demoButton">Demo</button>
@@ -88,13 +95,14 @@
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
                 <h2>Piezo</h2>
+                <p class="axis-legend graph-onset-hint">Pz → Gate · Vel · Macro4 Vol</p>
               </div>
               <canvas id="piezoCanvas" width="240" height="120"></canvas>
             </section>
 
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
-                <h2>Mic</h2>
+                <h2>Mic <span class="unconnected-badge">(unconnected)</span></h2>
               </div>
               <canvas id="micCanvas" width="240" height="120"></canvas>
             </section>
@@ -102,7 +110,7 @@
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
                 <h2>Pitch · Roll</h2>
-                <p class="axis-legend">M4L tilt · rad</p>
+                <p class="axis-legend">Pt→Macro2 Grain(回転角) · Rl→Macro1 FilePos · rad</p>
               </div>
               <canvas id="motionCanvas" width="240" height="120"></canvas>
             </section>
@@ -110,7 +118,7 @@
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
                 <h2>Yaw</h2>
-                <p class="axis-legend graph-onset-hint gyro-hint">Twist bow → gOn</p>
+                <p class="axis-legend graph-onset-hint gyro-hint">Yw→Macro3 FMfreq(ひねりトリガ) · Twist → gOn→NoteOn</p>
               </div>
               <canvas id="gyroCanvas" width="240" height="120"></canvas>
             </section>
@@ -118,7 +126,7 @@
             <section class="panel graph-panel graph-panel-compact">
               <div class="panel-header panel-header-mini">
                 <h2>Linear</h2>
-                <p class="axis-legend graph-onset-hint lin-hint">Tap / shake → lOn</p>
+                <p class="axis-legend graph-onset-hint lin-hint">lX→Macro5 Release · Tap/shake → lOn</p>
               </div>
               <canvas id="magCanvas" width="240" height="120"></canvas>
             </section>
@@ -137,6 +145,9 @@
         <section class="panel tuning-panel">
           <div class="tuning-head">
             <h2>Parameters</h2>
+            <div class="tuning-head-meta">
+              <span id="paramsM4lStatus" class="params-m4l-status params-m4l-idle" aria-live="polite">M4L — Bridge 未接続</span>
+            </div>
             <div class="tuning-actions">
               <button type="button" id="paramResetButton">Reset</button>
               <button type="button" id="paramCopyButton">M4L JSON</button>
@@ -152,6 +163,6 @@
     </div>
     </div>
 
-    <script type="module" src="./app.js?v=20260618v"></script>
+    <script type="module" src="./app.js?v=20260620f"></script>
   </body>
   </html>
